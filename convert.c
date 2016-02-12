@@ -153,36 +153,13 @@ static void check_safe_crlf(const char *path, enum crlf_action crlf_action,
 
 static int has_cr_in_index(const char *path)
 {
-	int pos, len;
 	unsigned long sz;
-	enum object_type type;
 	void *data;
 	int has_cr;
-	struct index_state *istate = &the_index;
 
-	len = strlen(path);
-	pos = index_name_pos(istate, path, len);
-	if (pos < 0) {
-		/*
-		 * We might be in the middle of a merge, in which
-		 * case we would read stage #2 (ours).
-		 */
-		int i;
-		for (i = -pos - 1;
-		     (pos < 0 && i < istate->cache_nr &&
-		      !strcmp(istate->cache[i]->name, path));
-		     i++)
-			if (ce_stage(istate->cache[i]) == 2)
-				pos = i;
-	}
-	if (pos < 0)
+	data = read_blob_data_from_cache(path, &sz);
+	if (!data)
 		return 0;
-	data = read_sha1_file(istate->cache[pos]->sha1, &type, &sz);
-	if (!data || type != OBJ_BLOB) {
-		free(data);
-		return 0;
-	}
-
 	has_cr = memchr(data, '\r', sz) != NULL;
 	free(data);
 	return has_cr;
@@ -335,16 +312,17 @@ static int crlf_to_worktree(const char *path, const char *src, size_t len,
 struct filter_params {
 	const char *src;
 	unsigned long size;
+	int fd;
 	const char *cmd;
 	const char *path;
 };
 
-static int filter_buffer(int in, int out, void *data)
+static int filter_buffer_or_fd(int in, int out, void *data)
 {
 	/*
 	 * Spawn cmd and feed the buffer contents through its stdin.
 	 */
-	struct child_process child_process;
+	struct child_process child_process = CHILD_PROCESS_INIT;
 	struct filter_params *params = (struct filter_params *)data;
 	int write_err, status;
 	const char *argv[] = { NULL, NULL };
@@ -367,7 +345,6 @@ static int filter_buffer(int in, int out, void *data)
 
 	argv[0] = cmd.buf;
 
-	memset(&child_process, 0, sizeof(child_process));
 	child_process.argv = argv;
 	child_process.use_shell = 1;
 	child_process.in = -1;
@@ -378,7 +355,17 @@ static int filter_buffer(int in, int out, void *data)
 
 	sigchain_push(SIGPIPE, SIG_IGN);
 
-	write_err = (write_in_full(child_process.in, params->src, params->size) < 0);
+	if (params->src) {
+		write_err = (write_in_full(child_process.in,
+					   params->src, params->size) < 0);
+		if (errno == EPIPE)
+			write_err = 0;
+	} else {
+		write_err = copy_fd(params->fd, child_process.in);
+		if (write_err == COPY_WRITE_ERROR && errno == EPIPE)
+			write_err = 0;
+	}
+
 	if (close(child_process.in))
 		write_err = 1;
 	if (write_err)
@@ -394,7 +381,7 @@ static int filter_buffer(int in, int out, void *data)
 	return (write_err || status);
 }
 
-static int apply_filter(const char *path, const char *src, size_t len,
+static int apply_filter(const char *path, const char *src, size_t len, int fd,
                         struct strbuf *dst, const char *cmd)
 {
 	/*
@@ -415,11 +402,12 @@ static int apply_filter(const char *path, const char *src, size_t len,
 		return 1;
 
 	memset(&async, 0, sizeof(async));
-	async.proc = filter_buffer;
+	async.proc = filter_buffer_or_fd;
 	async.data = &params;
 	async.out = -1;
 	params.src = src;
 	params.size = len;
+	params.fd = fd;
 	params.cmd = cmd;
 	params.path = path;
 
@@ -457,7 +445,7 @@ static struct convert_driver {
 
 static int read_convert_config(const char *var, const char *value, void *cb)
 {
-	const char *ep, *name;
+	const char *key, *name;
 	int namelen;
 	struct convert_driver *drv;
 
@@ -465,10 +453,8 @@ static int read_convert_config(const char *var, const char *value, void *cb)
 	 * External conversion drivers are configured using
 	 * "filter.<name>.variable".
 	 */
-	if (prefixcmp(var, "filter.") || (ep = strrchr(var, '.')) == var + 6)
+	if (parse_config_key(var, "filter", &name, &namelen, &key) < 0 || !name)
 		return 0;
-	name = var + 7;
-	namelen = ep - name;
 	for (drv = user_convert; drv; drv = drv->next)
 		if (!strncmp(drv->name, name, namelen) && !drv->name[namelen])
 			break;
@@ -479,8 +465,6 @@ static int read_convert_config(const char *var, const char *value, void *cb)
 		user_convert_tail = &(drv->next);
 	}
 
-	ep++;
-
 	/*
 	 * filter.<name>.smudge and filter.<name>.clean specifies
 	 * the command line:
@@ -490,13 +474,13 @@ static int read_convert_config(const char *var, const char *value, void *cb)
 	 * The command-line will not be interpolated in any way.
 	 */
 
-	if (!strcmp("smudge", ep))
+	if (!strcmp("smudge", key))
 		return git_config_string(&drv->smudge, var, value);
 
-	if (!strcmp("clean", ep))
+	if (!strcmp("clean", key))
 		return git_config_string(&drv->clean, var, value);
 
-	if (!strcmp("required", ep)) {
+	if (!strcmp("required", key)) {
 		drv->required = git_config_bool(var, value);
 		return 0;
 	}
@@ -774,6 +758,25 @@ static void convert_attrs(struct conv_attrs *ca, const char *path)
 	}
 }
 
+int would_convert_to_git_filter_fd(const char *path)
+{
+	struct conv_attrs ca;
+
+	convert_attrs(&ca, path);
+	if (!ca.drv)
+		return 0;
+
+	/*
+	 * Apply a filter to an fd only if the filter is required to succeed.
+	 * We must die if the filter fails, because the original data before
+	 * filtering is not available.
+	 */
+	if (!ca.drv->required)
+		return 0;
+
+	return apply_filter(path, NULL, 0, -1, NULL, ca.drv->clean);
+}
+
 int convert_to_git(const char *path, const char *src, size_t len,
                    struct strbuf *dst, enum safe_crlf checksafe)
 {
@@ -788,7 +791,7 @@ int convert_to_git(const char *path, const char *src, size_t len,
 		required = ca.drv->required;
 	}
 
-	ret |= apply_filter(path, src, len, dst, filter);
+	ret |= apply_filter(path, src, len, -1, dst, filter);
 	if (!ret && required)
 		die("%s: clean filter '%s' failed", path, ca.drv->name);
 
@@ -803,6 +806,23 @@ int convert_to_git(const char *path, const char *src, size_t len,
 		len = dst->len;
 	}
 	return ret | ident_to_git(path, src, len, dst, ca.ident);
+}
+
+void convert_to_git_filter_fd(const char *path, int fd, struct strbuf *dst,
+			      enum safe_crlf checksafe)
+{
+	struct conv_attrs ca;
+	convert_attrs(&ca, path);
+
+	assert(ca.drv);
+	assert(ca.drv->clean);
+
+	if (!apply_filter(path, NULL, 0, fd, dst, ca.drv->clean))
+		die("%s: clean filter '%s' failed", path, ca.drv->name);
+
+	ca.crlf_action = input_crlf_action(ca.crlf_action, ca.eol_attr);
+	crlf_to_git(path, dst->buf, dst->len, dst, ca.crlf_action, checksafe);
+	ident_to_git(path, dst->buf, dst->len, dst, ca.ident);
 }
 
 static int convert_to_working_tree_internal(const char *path, const char *src,
@@ -838,7 +858,7 @@ static int convert_to_working_tree_internal(const char *path, const char *src,
 		}
 	}
 
-	ret_filter = apply_filter(path, src, len, dst, filter);
+	ret_filter = apply_filter(path, src, len, -1, dst, filter);
 	if (!ret_filter && required)
 		die("%s: smudge filter %s failed", path, ca.drv->name);
 
@@ -862,7 +882,7 @@ int renormalize_buffer(const char *path, const char *src, size_t len, struct str
 
 /*****************************************************************
  *
- * Streaming converison support
+ * Streaming conversion support
  *
  *****************************************************************/
 
@@ -1148,9 +1168,9 @@ static int is_foreign_ident(const char *str)
 {
 	int i;
 
-	if (prefixcmp(str, "$Id: "))
+	if (!skip_prefix(str, "$Id: ", &str))
 		return 0;
-	for (i = 5; str[i]; i++) {
+	for (i = 0; str[i]; i++) {
 		if (isspace(str[i]) && str[i+1] != '$')
 			return 1;
 	}
@@ -1269,7 +1289,8 @@ static struct stream_filter *ident_filter(const unsigned char *sha1)
 {
 	struct ident_filter *ident = xmalloc(sizeof(*ident));
 
-	sprintf(ident->ident, ": %s $", sha1_to_hex(sha1));
+	xsnprintf(ident->ident, sizeof(ident->ident),
+		  ": %s $", sha1_to_hex(sha1));
 	strbuf_init(&ident->left, 0);
 	ident->filter.vtbl = &ident_vtbl;
 	ident->state = 0;

@@ -11,10 +11,6 @@ extern struct commit_list *filter_skipped(struct commit_list *list,
 					  int *count,
 					  int *skipped_first);
 
-extern void print_commit_list(struct commit_list *list,
-			      const char *format_cur,
-			      const char *format_last);
-
 #define BISECT_SHOW_ALL		(1<<0)
 #define REV_LIST_QUIET		(1<<1)
 
@@ -29,5 +25,7 @@ struct rev_list_info {
 extern int bisect_next_all(const char *prefix, int no_checkout);
 
 extern int estimate_bisect_steps(int all);
+
+extern void read_bisect_terms(const char **bad, const char **good);
 
 #endif

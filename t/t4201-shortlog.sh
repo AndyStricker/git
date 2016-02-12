@@ -93,7 +93,7 @@ test_expect_success 'output from user-defined format is re-wrapped' '
 	test_cmp expect log.predictable
 '
 
-test_expect_success 'shortlog wrapping' '
+test_expect_success !MINGW 'shortlog wrapping' '
 	cat >expect <<\EOF &&
 A U Thor (5):
       Test
@@ -114,9 +114,33 @@ EOF
 	test_cmp expect out
 '
 
-test_expect_success 'shortlog from non-git directory' '
+test_expect_success !MINGW 'shortlog from non-git directory' '
 	git log HEAD >log &&
 	GIT_DIR=non-existing git shortlog -w <log >out &&
+	test_cmp expect out
+'
+
+test_expect_success 'shortlog should add newline when input line matches wraplen' '
+	cat >expect <<\EOF &&
+A U Thor (2):
+      bbbbbbbbbbbbbbbbbb: bbbbbbbb bbb bbbb bbbbbbb bb bbbb bbb bbbbb bbbbbb
+      aaaaaaaaaaaaaaaaaaaaaa: aaaaaa aaaaaaaaaa aaaa aaaaaaaa aa aaaa aa aaa
+
+EOF
+	git shortlog -w >out <<\EOF &&
+commit 0000000000000000000000000000000000000001
+Author: A U Thor <author@example.com>
+Date:   Thu Apr 7 15:14:13 2005 -0700
+
+    aaaaaaaaaaaaaaaaaaaaaa: aaaaaa aaaaaaaaaa aaaa aaaaaaaa aa aaaa aa aaa
+
+commit 0000000000000000000000000000000000000002
+Author: A U Thor <author@example.com>
+Date:   Thu Apr 7 15:14:13 2005 -0700
+
+    bbbbbbbbbbbbbbbbbb: bbbbbbbb bbb bbbb bbbbbbb bb bbbb bbb bbbbb bbbbbb
+
+EOF
 	test_cmp expect out
 '
 
@@ -135,7 +159,7 @@ $DSCHO (2):
 
 EOF
 
-test_expect_success 'shortlog encoding' '
+test_expect_success !MINGW 'shortlog encoding' '
 	git reset --hard "$commit" &&
 	git config --unset i18n.commitencoding &&
 	echo 2 > a1 &&
@@ -147,5 +171,27 @@ test_expect_success 'shortlog encoding' '
 	git config --unset i18n.commitencoding &&
 	git shortlog HEAD~2.. > out &&
 test_cmp expect out'
+
+test_expect_success 'shortlog ignores commits with missing authors' '
+	git commit --allow-empty -m normal &&
+	git commit --allow-empty -m soon-to-be-broken &&
+	git cat-file commit HEAD >commit.tmp &&
+	sed "/^author/d" commit.tmp >broken.tmp &&
+	commit=$(git hash-object -w -t commit --stdin <broken.tmp) &&
+	git update-ref HEAD $commit &&
+	cat >expect <<-\EOF &&
+	A U Thor (1):
+	      normal
+
+	EOF
+	git shortlog HEAD~2.. >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'shortlog with revision pseudo options' '
+	git shortlog --all &&
+	git shortlog --branches &&
+	git shortlog --exclude=refs/heads/m* --all
+'
 
 test_done

@@ -14,7 +14,7 @@
  */
 void create_branch(const char *head, const char *name, const char *start_name,
 		   int force, int reflog,
-		   int clobber_head, enum branch_track track);
+		   int clobber_head, int quiet, enum branch_track track);
 
 /*
  * Validates that the requested branch may be created, returning the
@@ -51,5 +51,12 @@ extern void install_branch_config(int flag, const char *local, const char *origi
  * Read branch description
  */
 extern int read_branch_desc(struct strbuf *, const char *branch_name);
+
+/*
+ * Check if a branch is checked out in the main worktree or any linked
+ * worktree and die (with a message describing its checkout location) if
+ * it is.
+ */
+extern void die_if_checked_out(const char *branch);
 
 #endif

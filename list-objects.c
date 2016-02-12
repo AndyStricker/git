@@ -81,8 +81,11 @@ static void process_tree(struct rev_info *revs,
 		die("bad tree object");
 	if (obj->flags & (UNINTERESTING | SEEN))
 		return;
-	if (parse_tree(tree) < 0)
-		die("bad tree object %s", sha1_to_hex(obj->sha1));
+	if (parse_tree_gently(tree, revs->ignore_missing_links) < 0) {
+		if (revs->ignore_missing_links)
+			return;
+		die("bad tree object %s", oid_to_hex(&obj->oid));
+	}
 	obj->flags |= SEEN;
 	show(obj, path, name, cb_data);
 	me.up = path;
@@ -123,8 +126,7 @@ static void process_tree(struct rev_info *revs,
 				     cb_data);
 	}
 	strbuf_setlen(base, baselen);
-	free(tree->buffer);
-	tree->buffer = NULL;
+	free_tree_buffer(tree);
 }
 
 static void mark_edge_parents_uninteresting(struct commit *commit,
@@ -145,18 +147,36 @@ static void mark_edge_parents_uninteresting(struct commit *commit,
 	}
 }
 
-void mark_edges_uninteresting(struct commit_list *list,
-			      struct rev_info *revs,
-			      show_edge_fn show_edge)
+void mark_edges_uninteresting(struct rev_info *revs, show_edge_fn show_edge)
 {
-	for ( ; list; list = list->next) {
+	struct commit_list *list;
+	int i;
+
+	for (list = revs->commits; list; list = list->next) {
 		struct commit *commit = list->item;
 
 		if (commit->object.flags & UNINTERESTING) {
 			mark_tree_uninteresting(commit->tree);
+			if (revs->edge_hint_aggressive && !(commit->object.flags & SHOWN)) {
+				commit->object.flags |= SHOWN;
+				show_edge(commit);
+			}
 			continue;
 		}
 		mark_edge_parents_uninteresting(commit, revs, show_edge);
+	}
+	if (revs->edge_hint_aggressive) {
+		for (i = 0; i < revs->cmdline.nr; i++) {
+			struct object *obj = revs->cmdline.rev[i].item;
+			struct commit *commit = (struct commit *)obj;
+			if (obj->type != OBJ_COMMIT || !(obj->flags & UNINTERESTING))
+				continue;
+			mark_tree_uninteresting(commit->tree);
+			if (!(obj->flags & SHOWN)) {
+				obj->flags |= SHOWN;
+				show_edge(commit);
+			}
+		}
 	}
 }
 
@@ -188,6 +208,7 @@ void traverse_commit_list(struct rev_info *revs,
 		struct object_array_entry *pending = revs->pending.objects + i;
 		struct object *obj = pending->item;
 		const char *name = pending->name;
+		const char *path = pending->path;
 		if (obj->flags & (UNINTERESTING | SEEN))
 			continue;
 		if (obj->type == OBJ_TAG) {
@@ -195,24 +216,21 @@ void traverse_commit_list(struct rev_info *revs,
 			show_object(obj, NULL, name, data);
 			continue;
 		}
+		if (!path)
+			path = "";
 		if (obj->type == OBJ_TREE) {
 			process_tree(revs, (struct tree *)obj, show_object,
-				     NULL, &base, name, data);
+				     NULL, &base, path, data);
 			continue;
 		}
 		if (obj->type == OBJ_BLOB) {
 			process_blob(revs, (struct blob *)obj, show_object,
-				     NULL, name, data);
+				     NULL, path, data);
 			continue;
 		}
 		die("unknown pending object %s (%s)",
-		    sha1_to_hex(obj->sha1), name);
+		    oid_to_hex(&obj->oid), name);
 	}
-	if (revs->pending.nr) {
-		free(revs->pending.objects);
-		revs->pending.nr = 0;
-		revs->pending.alloc = 0;
-		revs->pending.objects = NULL;
-	}
+	object_array_clear(&revs->pending);
 	strbuf_release(&base);
 }

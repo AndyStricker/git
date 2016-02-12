@@ -4,6 +4,19 @@
 #include "sigchain.h"
 #include "argv-array.h"
 
+void child_process_init(struct child_process *child)
+{
+	memset(child, 0, sizeof(*child));
+	argv_array_init(&child->args);
+	argv_array_init(&child->env_array);
+}
+
+void child_process_clear(struct child_process *child)
+{
+	argv_array_clear(&child->args);
+	argv_array_clear(&child->env_array);
+}
+
 struct child_to_clean {
 	pid_t pid;
 	struct child_to_clean *next;
@@ -11,26 +24,27 @@ struct child_to_clean {
 static struct child_to_clean *children_to_clean;
 static int installed_child_cleanup_handler;
 
-static void cleanup_children(int sig)
+static void cleanup_children(int sig, int in_signal)
 {
 	while (children_to_clean) {
 		struct child_to_clean *p = children_to_clean;
 		children_to_clean = p->next;
 		kill(p->pid, sig);
-		free(p);
+		if (!in_signal)
+			free(p);
 	}
 }
 
 static void cleanup_children_on_signal(int sig)
 {
-	cleanup_children(sig);
+	cleanup_children(sig, 1);
 	sigchain_pop(sig);
 	raise(sig);
 }
 
 static void cleanup_children_on_exit(void)
 {
-	cleanup_children(SIGTERM);
+	cleanup_children(SIGTERM, 0);
 }
 
 static void mark_child_for_cleanup(pid_t pid)
@@ -49,13 +63,14 @@ static void mark_child_for_cleanup(pid_t pid)
 
 static void clear_child_for_cleanup(pid_t pid)
 {
-	struct child_to_clean **last, *p;
+	struct child_to_clean **pp;
 
-	last = &children_to_clean;
-	for (p = children_to_clean; p; p = p->next) {
-		if (p->pid == pid) {
-			*last = p->next;
-			free(p);
+	for (pp = &children_to_clean; *pp; pp = &(*pp)->next) {
+		struct child_to_clean *clean_me = *pp;
+
+		if (clean_me->pid == pid) {
+			*pp = clean_me->next;
+			free(clean_me);
 			return;
 		}
 	}
@@ -67,14 +82,81 @@ static inline void close_pair(int fd[2])
 	close(fd[1]);
 }
 
-#ifndef WIN32
+#ifndef GIT_WINDOWS_NATIVE
 static inline void dup_devnull(int to)
 {
 	int fd = open("/dev/null", O_RDWR);
-	dup2(fd, to);
+	if (fd < 0)
+		die_errno(_("open /dev/null failed"));
+	if (dup2(fd, to) < 0)
+		die_errno(_("dup2(%d,%d) failed"), fd, to);
 	close(fd);
 }
 #endif
+
+static char *locate_in_PATH(const char *file)
+{
+	const char *p = getenv("PATH");
+	struct strbuf buf = STRBUF_INIT;
+
+	if (!p || !*p)
+		return NULL;
+
+	while (1) {
+		const char *end = strchrnul(p, ':');
+
+		strbuf_reset(&buf);
+
+		/* POSIX specifies an empty entry as the current directory. */
+		if (end != p) {
+			strbuf_add(&buf, p, end - p);
+			strbuf_addch(&buf, '/');
+		}
+		strbuf_addstr(&buf, file);
+
+		if (!access(buf.buf, F_OK))
+			return strbuf_detach(&buf, NULL);
+
+		if (!*end)
+			break;
+		p = end + 1;
+	}
+
+	strbuf_release(&buf);
+	return NULL;
+}
+
+static int exists_in_PATH(const char *file)
+{
+	char *r = locate_in_PATH(file);
+	free(r);
+	return r != NULL;
+}
+
+int sane_execvp(const char *file, char * const argv[])
+{
+	if (!execvp(file, argv))
+		return 0; /* cannot happen ;-) */
+
+	/*
+	 * When a command can't be found because one of the directories
+	 * listed in $PATH is unsearchable, execvp reports EACCES, but
+	 * careful usability testing (read: analysis of occasional bug
+	 * reports) reveals that "No such file or directory" is more
+	 * intuitive.
+	 *
+	 * We avoid commands with "/", because execvp will not do $PATH
+	 * lookups in that case.
+	 *
+	 * The reassignment of EACCES to errno looks like a no-op below,
+	 * but we need to protect against exists_in_PATH overwriting errno.
+	 */
+	if (errno == EACCES && !strchr(file, '/'))
+		errno = exists_in_PATH(file) ? EACCES : ENOENT;
+	else if (errno == ENOTDIR && !strchr(file, '/'))
+		errno = ENOENT;
+	return -1;
+}
 
 static const char **prepare_shell_cmd(const char **argv)
 {
@@ -90,7 +172,11 @@ static const char **prepare_shell_cmd(const char **argv)
 		die("BUG: shell command is empty");
 
 	if (strcspn(argv[0], "|&;<>()$`\\\"' \t\n*?[#~=%") != strlen(argv[0])) {
+#ifndef GIT_WINDOWS_NATIVE
+		nargv[nargc++] = SHELL_PATH;
+#else
 		nargv[nargc++] = "sh";
+#endif
 		nargv[nargc++] = "-c";
 
 		if (argc < 2)
@@ -109,19 +195,18 @@ static const char **prepare_shell_cmd(const char **argv)
 	return nargv;
 }
 
-#ifndef WIN32
+#ifndef GIT_WINDOWS_NATIVE
 static int execv_shell_cmd(const char **argv)
 {
 	const char **nargv = prepare_shell_cmd(argv);
 	trace_argv_printf(nargv, "trace: exec:");
-	execvp(nargv[0], (char **)nargv);
+	sane_execvp(nargv[0], (char **)nargv);
 	free(nargv);
 	return -1;
 }
 #endif
 
-#ifndef WIN32
-static int child_err = 2;
+#ifndef GIT_WINDOWS_NATIVE
 static int child_notifier = -1;
 
 static void notify_parent(void)
@@ -133,17 +218,6 @@ static void notify_parent(void)
 	 */
 	xwrite(child_notifier, "", 1);
 }
-
-static NORETURN void die_child(const char *err, va_list params)
-{
-	vwritef(child_err, "fatal: ", err, params);
-	exit(128);
-}
-
-static void error_child(const char *err, va_list params)
-{
-	vwritef(child_err, "error: ", err, params);
-}
 #endif
 
 static inline void set_cloexec(int fd)
@@ -153,7 +227,7 @@ static inline void set_cloexec(int fd)
 		fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
-static int wait_or_whine(pid_t pid, const char *argv0, int silent_exec_failure)
+static int wait_or_whine(pid_t pid, const char *argv0, int in_signal)
 {
 	int status, code = -1;
 	pid_t waiting;
@@ -161,6 +235,8 @@ static int wait_or_whine(pid_t pid, const char *argv0, int silent_exec_failure)
 
 	while ((waiting = waitpid(pid, &status, 0)) < 0 && errno == EINTR)
 		;	/* nothing */
+	if (in_signal)
+		return 0;
 
 	if (waiting < 0) {
 		failed_errno = errno;
@@ -169,13 +245,14 @@ static int wait_or_whine(pid_t pid, const char *argv0, int silent_exec_failure)
 		error("waitpid is confused (%s)", argv0);
 	} else if (WIFSIGNALED(status)) {
 		code = WTERMSIG(status);
-		error("%s died of signal %d", argv0, code);
+		if (code != SIGINT && code != SIGQUIT)
+			error("%s died of signal %d", argv0, code);
 		/*
 		 * This return value is chosen so that code & 0xff
 		 * mimics the exit code that a POSIX shell would report for
 		 * a program that died from this signal.
 		 */
-		code -= 128;
+		code += 128;
 	} else if (WIFEXITED(status)) {
 		code = WEXITSTATUS(status);
 		/*
@@ -199,7 +276,13 @@ int start_command(struct child_process *cmd)
 {
 	int need_in, need_out, need_err;
 	int fdin[2], fdout[2], fderr[2];
-	int failed_errno = failed_errno;
+	int failed_errno;
+	char *str;
+
+	if (!cmd->argv)
+		cmd->argv = cmd->args.argv;
+	if (!cmd->env)
+		cmd->env = cmd->env_array.argv;
 
 	/*
 	 * In case of errors we must keep the promise to close FDs
@@ -212,6 +295,7 @@ int start_command(struct child_process *cmd)
 			failed_errno = errno;
 			if (cmd->out > 0)
 				close(cmd->out);
+			str = "standard input";
 			goto fail_pipe;
 		}
 		cmd->in = fdin[1];
@@ -227,6 +311,7 @@ int start_command(struct child_process *cmd)
 				close_pair(fdin);
 			else if (cmd->in)
 				close(cmd->in);
+			str = "standard output";
 			goto fail_pipe;
 		}
 		cmd->out = fdout[0];
@@ -244,9 +329,11 @@ int start_command(struct child_process *cmd)
 				close_pair(fdout);
 			else if (cmd->out)
 				close(cmd->out);
+			str = "standard error";
 fail_pipe:
-			error("cannot create pipe for %s: %s",
-				cmd->argv[0], strerror(failed_errno));
+			error("cannot create %s pipe for %s: %s",
+				str, cmd->argv[0], strerror(failed_errno));
+			child_process_clear(cmd);
 			errno = failed_errno;
 			return -1;
 		}
@@ -256,13 +343,14 @@ fail_pipe:
 	trace_argv_printf(cmd->argv, "trace: run_command:");
 	fflush(NULL);
 
-#ifndef WIN32
+#ifndef GIT_WINDOWS_NATIVE
 {
 	int notify_pipe[2];
 	if (pipe(notify_pipe))
 		notify_pipe[0] = notify_pipe[1] = -1;
 
 	cmd->pid = fork();
+	failed_errno = errno;
 	if (!cmd->pid) {
 		/*
 		 * Redirect the channel to write syscall error messages to
@@ -270,11 +358,10 @@ fail_pipe:
 		 * in subsequent call paths use the parent's stderr.
 		 */
 		if (cmd->no_stderr || need_err) {
-			child_err = dup(2);
+			int child_err = dup(2);
 			set_cloexec(child_err);
+			set_error_handle(fdopen(child_err, "w"));
 		}
-		set_die_routine(die_child);
-		set_error_routine(error_child);
 
 		close(notify_pipe[0]);
 		set_cloexec(notify_pipe[1]);
@@ -324,23 +411,12 @@ fail_pipe:
 					unsetenv(*cmd->env);
 			}
 		}
-		if (cmd->preexec_cb) {
-			/*
-			 * We cannot predict what the pre-exec callback does.
-			 * Forgo parent notification.
-			 */
-			close(child_notifier);
-			child_notifier = -1;
-
-			cmd->preexec_cb();
-		}
-		if (cmd->git_cmd) {
+		if (cmd->git_cmd)
 			execv_git_cmd(cmd->argv);
-		} else if (cmd->use_shell) {
+		else if (cmd->use_shell)
 			execv_shell_cmd(cmd->argv);
-		} else {
-			execvp(cmd->argv[0], (char *const*) cmd->argv);
-		}
+		else
+			sane_execvp(cmd->argv[0], (char *const*) cmd->argv);
 		if (errno == ENOENT) {
 			if (!cmd->silent_exec_failure)
 				error("cannot run %s: %s", cmd->argv[0],
@@ -352,7 +428,7 @@ fail_pipe:
 	}
 	if (cmd->pid < 0)
 		error("cannot fork() for %s: %s", cmd->argv[0],
-			strerror(failed_errno = errno));
+			strerror(errno));
 	else if (cmd->clean_on_exit)
 		mark_child_for_cleanup(cmd->pid);
 
@@ -369,19 +445,16 @@ fail_pipe:
 		 * At this point we know that fork() succeeded, but execvp()
 		 * failed. Errors have been reported to our stderr.
 		 */
-		wait_or_whine(cmd->pid, cmd->argv[0],
-			      cmd->silent_exec_failure);
+		wait_or_whine(cmd->pid, cmd->argv[0], 0);
 		failed_errno = errno;
 		cmd->pid = -1;
 	}
 	close(notify_pipe[0]);
-
 }
 #else
 {
 	int fhin = 0, fhout = 1, fherr = 2;
 	const char **sargv = cmd->argv;
-	char **env = environ;
 
 	if (cmd->no_stdin)
 		fhin = open("/dev/null", O_RDWR);
@@ -406,25 +479,19 @@ fail_pipe:
 	else if (cmd->out > 1)
 		fhout = dup(cmd->out);
 
-	if (cmd->env)
-		env = make_augmented_environ(cmd->env);
-
-	if (cmd->git_cmd) {
+	if (cmd->git_cmd)
 		cmd->argv = prepare_git_cmd(cmd->argv);
-	} else if (cmd->use_shell) {
+	else if (cmd->use_shell)
 		cmd->argv = prepare_shell_cmd(cmd->argv);
-	}
 
-	cmd->pid = mingw_spawnvpe(cmd->argv[0], cmd->argv, env, cmd->dir,
-				  fhin, fhout, fherr);
+	cmd->pid = mingw_spawnvpe(cmd->argv[0], cmd->argv, (char**) cmd->env,
+			cmd->dir, fhin, fhout, fherr);
 	failed_errno = errno;
 	if (cmd->pid < 0 && (!cmd->silent_exec_failure || errno != ENOENT))
 		error("cannot spawn %s: %s", cmd->argv[0], strerror(errno));
 	if (cmd->clean_on_exit && cmd->pid >= 0)
 		mark_child_for_cleanup(cmd->pid);
 
-	if (cmd->env)
-		free_environ(env);
 	if (cmd->git_cmd)
 		free(cmd->argv);
 
@@ -451,6 +518,7 @@ fail_pipe:
 			close_pair(fderr);
 		else if (cmd->err)
 			close(cmd->err);
+		child_process_clear(cmd);
 		errno = failed_errno;
 		return -1;
 	}
@@ -475,42 +543,45 @@ fail_pipe:
 
 int finish_command(struct child_process *cmd)
 {
-	return wait_or_whine(cmd->pid, cmd->argv[0], cmd->silent_exec_failure);
+	int ret = wait_or_whine(cmd->pid, cmd->argv[0], 0);
+	child_process_clear(cmd);
+	return ret;
 }
+
+int finish_command_in_signal(struct child_process *cmd)
+{
+	return wait_or_whine(cmd->pid, cmd->argv[0], 1);
+}
+
 
 int run_command(struct child_process *cmd)
 {
-	int code = start_command(cmd);
+	int code;
+
+	if (cmd->out < 0 || cmd->err < 0)
+		die("BUG: run_command with a pipe can cause deadlock");
+
+	code = start_command(cmd);
 	if (code)
 		return code;
 	return finish_command(cmd);
 }
 
-static void prepare_run_command_v_opt(struct child_process *cmd,
-				      const char **argv,
-				      int opt)
-{
-	memset(cmd, 0, sizeof(*cmd));
-	cmd->argv = argv;
-	cmd->no_stdin = opt & RUN_COMMAND_NO_STDIN ? 1 : 0;
-	cmd->git_cmd = opt & RUN_GIT_CMD ? 1 : 0;
-	cmd->stdout_to_stderr = opt & RUN_COMMAND_STDOUT_TO_STDERR ? 1 : 0;
-	cmd->silent_exec_failure = opt & RUN_SILENT_EXEC_FAILURE ? 1 : 0;
-	cmd->use_shell = opt & RUN_USING_SHELL ? 1 : 0;
-	cmd->clean_on_exit = opt & RUN_CLEAN_ON_EXIT ? 1 : 0;
-}
-
 int run_command_v_opt(const char **argv, int opt)
 {
-	struct child_process cmd;
-	prepare_run_command_v_opt(&cmd, argv, opt);
-	return run_command(&cmd);
+	return run_command_v_opt_cd_env(argv, opt, NULL, NULL);
 }
 
 int run_command_v_opt_cd_env(const char **argv, int opt, const char *dir, const char *const *env)
 {
-	struct child_process cmd;
-	prepare_run_command_v_opt(&cmd, argv, opt);
+	struct child_process cmd = CHILD_PROCESS_INIT;
+	cmd.argv = argv;
+	cmd.no_stdin = opt & RUN_COMMAND_NO_STDIN ? 1 : 0;
+	cmd.git_cmd = opt & RUN_GIT_CMD ? 1 : 0;
+	cmd.stdout_to_stderr = opt & RUN_COMMAND_STDOUT_TO_STDERR ? 1 : 0;
+	cmd.silent_exec_failure = opt & RUN_SILENT_EXEC_FAILURE ? 1 : 0;
+	cmd.use_shell = opt & RUN_USING_SHELL ? 1 : 0;
+	cmd.clean_on_exit = opt & RUN_CLEAN_ON_EXIT ? 1 : 0;
 	cmd.dir = dir;
 	cmd.env = env;
 	return run_command(&cmd);
@@ -520,6 +591,7 @@ int run_command_v_opt_cd_env(const char **argv, int opt, const char *dir, const 
 static pthread_t main_thread;
 static int main_thread_set;
 static pthread_key_t async_key;
+static pthread_key_t async_die_counter;
 
 static void *run_thread(void *data)
 {
@@ -535,7 +607,7 @@ static NORETURN void die_async(const char *err, va_list params)
 {
 	vreportf("fatal: ", err, params);
 
-	if (!pthread_equal(main_thread, pthread_self())) {
+	if (in_async()) {
 		struct async *async = pthread_getspecific(async_key);
 		if (async->proc_in >= 0)
 			close(async->proc_in);
@@ -546,6 +618,66 @@ static NORETURN void die_async(const char *err, va_list params)
 
 	exit(128);
 }
+
+static int async_die_is_recursing(void)
+{
+	void *ret = pthread_getspecific(async_die_counter);
+	pthread_setspecific(async_die_counter, (void *)1);
+	return ret != NULL;
+}
+
+int in_async(void)
+{
+	if (!main_thread_set)
+		return 0; /* no asyncs started yet */
+	return !pthread_equal(main_thread, pthread_self());
+}
+
+#else
+
+static struct {
+	void (**handlers)(void);
+	size_t nr;
+	size_t alloc;
+} git_atexit_hdlrs;
+
+static int git_atexit_installed;
+
+static void git_atexit_dispatch(void)
+{
+	size_t i;
+
+	for (i=git_atexit_hdlrs.nr ; i ; i--)
+		git_atexit_hdlrs.handlers[i-1]();
+}
+
+static void git_atexit_clear(void)
+{
+	free(git_atexit_hdlrs.handlers);
+	memset(&git_atexit_hdlrs, 0, sizeof(git_atexit_hdlrs));
+	git_atexit_installed = 0;
+}
+
+#undef atexit
+int git_atexit(void (*handler)(void))
+{
+	ALLOC_GROW(git_atexit_hdlrs.handlers, git_atexit_hdlrs.nr + 1, git_atexit_hdlrs.alloc);
+	git_atexit_hdlrs.handlers[git_atexit_hdlrs.nr++] = handler;
+	if (!git_atexit_installed) {
+		if (atexit(&git_atexit_dispatch))
+			return -1;
+		git_atexit_installed = 1;
+	}
+	return 0;
+}
+#define atexit git_atexit
+
+static int process_is_async;
+int in_async(void)
+{
+	return process_is_async;
+}
+
 #endif
 
 int start_async(struct async *async)
@@ -604,6 +736,8 @@ int start_async(struct async *async)
 			close(fdin[1]);
 		if (need_out)
 			close(fdout[0]);
+		git_atexit_clear();
+		process_is_async = 1;
 		exit(!!async->proc(proc_in, proc_out, async->data));
 	}
 
@@ -627,7 +761,9 @@ int start_async(struct async *async)
 		main_thread_set = 1;
 		main_thread = pthread_self();
 		pthread_key_create(&async_key, NULL);
+		pthread_key_create(&async_die_counter, NULL);
 		set_die_routine(die_async);
+		set_die_is_recursing_routine(async_die_is_recursing);
 	}
 
 	if (proc_in >= 0)
@@ -672,36 +808,60 @@ int finish_async(struct async *async)
 #endif
 }
 
-int run_hook(const char *index_file, const char *name, ...)
+const char *find_hook(const char *name)
 {
-	struct child_process hook;
-	struct argv_array argv = ARGV_ARRAY_INIT;
-	const char *p, *env[2];
-	char index[PATH_MAX];
+	static struct strbuf path = STRBUF_INIT;
+
+	strbuf_reset(&path);
+	strbuf_git_path(&path, "hooks/%s", name);
+	if (access(path.buf, X_OK) < 0)
+		return NULL;
+	return path.buf;
+}
+
+int run_hook_ve(const char *const *env, const char *name, va_list args)
+{
+	struct child_process hook = CHILD_PROCESS_INIT;
+	const char *p;
+
+	p = find_hook(name);
+	if (!p)
+		return 0;
+
+	argv_array_push(&hook.args, p);
+	while ((p = va_arg(args, const char *)))
+		argv_array_push(&hook.args, p);
+	hook.env = env;
+	hook.no_stdin = 1;
+	hook.stdout_to_stderr = 1;
+
+	return run_command(&hook);
+}
+
+int run_hook_le(const char *const *env, const char *name, ...)
+{
 	va_list args;
 	int ret;
 
-	if (access(git_path("hooks/%s", name), X_OK) < 0)
-		return 0;
-
 	va_start(args, name);
-	argv_array_push(&argv, git_path("hooks/%s", name));
-	while ((p = va_arg(args, const char *)))
-		argv_array_push(&argv, p);
+	ret = run_hook_ve(env, name, args);
 	va_end(args);
 
-	memset(&hook, 0, sizeof(hook));
-	hook.argv = argv.argv;
-	hook.no_stdin = 1;
-	hook.stdout_to_stderr = 1;
-	if (index_file) {
-		snprintf(index, sizeof(index), "GIT_INDEX_FILE=%s", index_file);
-		env[0] = index;
-		env[1] = NULL;
-		hook.env = env;
+	return ret;
+}
+
+int capture_command(struct child_process *cmd, struct strbuf *buf, size_t hint)
+{
+	cmd->out = -1;
+	if (start_command(cmd) < 0)
+		return -1;
+
+	if (strbuf_read(buf, cmd->out, hint) < 0) {
+		close(cmd->out);
+		finish_command(cmd); /* throw away exit code */
+		return -1;
 	}
 
-	ret = run_command(&hook);
-	argv_array_clear(&argv);
-	return ret;
+	close(cmd->out);
+	return finish_command(cmd);
 }

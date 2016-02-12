@@ -174,11 +174,11 @@ test_expect_success \
 test_expect_success \
     '[index v1] 5) pack-objects happily reuses corrupted data' \
     'pack4=$(git pack-objects test-4 <obj-list) &&
-     test -f "test-4-${pack1}.pack"'
+     test -f "test-4-${pack4}.pack"'
 
 test_expect_success \
     '[index v1] 6) newly created pack is BAD !' \
-    'test_must_fail git verify-pack -v "test-4-${pack1}.pack"'
+    'test_must_fail git verify-pack -v "test-4-${pack4}.pack"'
 
 test_expect_success \
     '[index v2] 1) stream pack to repository' \
@@ -241,6 +241,25 @@ test_expect_success 'running index-pack in the object store' '
 	git index-pack pack-${pack1}.pack
     ) &&
     test -f .git/objects/pack/pack-${pack1}.idx
+'
+
+test_expect_success 'index-pack --strict warns upon missing tagger in tag' '
+    sha=$(git rev-parse HEAD) &&
+    cat >wrong-tag <<EOF &&
+object $sha
+type commit
+tag guten tag
+
+This is an invalid tag.
+EOF
+
+    tag=$(git hash-object -t tag -w --stdin <wrong-tag) &&
+    pack1=$(echo $tag $sha | git pack-objects tag-test) &&
+    echo remove tag object &&
+    thirtyeight=${tag#??} &&
+    rm -f .git/objects/${tag%$thirtyeight}/$thirtyeight &&
+    git index-pack --strict tag-test-${pack1}.pack 2>err &&
+    grep "^warning:.* expected .tagger. line" err
 '
 
 test_done

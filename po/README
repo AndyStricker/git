@@ -10,10 +10,26 @@ coordinates our localization effort in the l10 coordinator repository:
 
         https://github.com/git-l10n/git-po/
 
+The two character language translation codes are defined by ISO_639-1, as
+stated in the gettext(1) full manual, appendix A.1, Usual Language Codes.
+
+
+Contributing to an existing translation
+---------------------------------------
 As a contributor for a language XX, you should first check TEAMS file in
 this directory to see whether a dedicated repository for your language XX
 exists. Fork the dedicated repository and start to work if it exists.
 
+Sometime, contributors may find that the translations of their Git
+distributions are quite different with the translations of the
+corresponding version from Git official. This is because some Git
+distributions (such as from Ubuntu, etc.) have their own l10n workflow.
+For this case, wrong translations should be reported and fixed through
+their workflows.
+
+
+Creating a new language translation
+-----------------------------------
 If you are the first contributor for the language XX, please fork this
 repository, prepare and/or update the translated message file po/XX.po
 (described later), and ask the l10n coordinator to pull your work.
@@ -23,6 +39,9 @@ coordinate among yourselves and nominate the team leader for your
 language, so that the l10n coordinator only needs to interact with one
 person per language.
 
+
+Translation Process Flow
+------------------------
 The overall data-flow looks like this:
 
     +-------------------+            +------------------+
@@ -178,7 +197,7 @@ used:
 
 C:
 
- - Include builtin.h at the top, it'll pull in in gettext.h, which
+ - Include builtin.h at the top, it'll pull in gettext.h, which
    defines the gettext interface. Consult with the list if you need to
    use gettext.h directly.
 
@@ -232,7 +251,7 @@ Shell:
 
        # To interpolate variables:
        details="oh noes"
-       eval_gettext "An error occured: \$details"; echo
+       eval_gettext "An error occurred: \$details"; echo
 
    In addition we have wrappers for messages that end with a trailing
    newline. I.e. you could write the above as:
@@ -242,7 +261,7 @@ Shell:
 
        # To interpolate variables:
        details="oh noes"
-       eval_gettextln "An error occured: \$details"
+       eval_gettextln "An error occurred: \$details"
 
    More documentation about the interface is available in the GNU info
    page: `info '(gettext)sh'`. Looking at git-am.sh (the first shell
@@ -257,7 +276,7 @@ Perl:
 
        use Git::I18N;
        print __("Welcome to Git!\n");
-       printf __("The following error occured: %s\n"), $error;
+       printf __("The following error occurred: %s\n"), $error;
 
    Run `perldoc perl/Git/I18N.pm` for more info.
 
