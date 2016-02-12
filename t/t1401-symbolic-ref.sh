@@ -28,9 +28,68 @@ test_expect_success 'symbolic-ref refuses non-ref for HEAD' '
 reset_to_sane
 
 test_expect_success 'symbolic-ref refuses bare sha1' '
-	echo content >file && git add file && git commit -m one
+	echo content >file && git add file && git commit -m one &&
 	test_must_fail git symbolic-ref HEAD `git rev-parse HEAD`
 '
 reset_to_sane
+
+test_expect_success 'symbolic-ref deletes HEAD' '
+	git symbolic-ref -d HEAD &&
+	test_path_is_file .git/refs/heads/foo &&
+	test_path_is_missing .git/HEAD
+'
+reset_to_sane
+
+test_expect_success 'symbolic-ref deletes dangling HEAD' '
+	git symbolic-ref HEAD refs/heads/missing &&
+	git symbolic-ref -d HEAD &&
+	test_path_is_missing .git/refs/heads/missing &&
+	test_path_is_missing .git/HEAD
+'
+reset_to_sane
+
+test_expect_success 'symbolic-ref fails to delete missing FOO' '
+	echo "fatal: Cannot delete FOO, not a symbolic ref" >expect &&
+	test_must_fail git symbolic-ref -d FOO >actual 2>&1 &&
+	test_cmp expect actual
+'
+reset_to_sane
+
+test_expect_success 'symbolic-ref fails to delete real ref' '
+	echo "fatal: Cannot delete refs/heads/foo, not a symbolic ref" >expect &&
+	test_must_fail git symbolic-ref -d refs/heads/foo >actual 2>&1 &&
+	test_path_is_file .git/refs/heads/foo &&
+	test_cmp expect actual
+'
+reset_to_sane
+
+test_expect_success 'create large ref name' '
+	# make 256+ character ref; some systems may not handle that,
+	# so be gentle
+	long=0123456789abcdef &&
+	long=$long/$long/$long/$long &&
+	long=$long/$long/$long/$long &&
+	long_ref=refs/heads/$long &&
+	tree=$(git write-tree) &&
+	commit=$(echo foo | git commit-tree $tree) &&
+	if git update-ref $long_ref $commit; then
+		test_set_prereq LONG_REF
+	else
+		echo >&2 "long refs not supported"
+	fi
+'
+
+test_expect_success LONG_REF 'symbolic-ref can point to large ref name' '
+	git symbolic-ref HEAD $long_ref &&
+	echo $long_ref >expect &&
+	git symbolic-ref HEAD >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success LONG_REF 'we can parse long symbolic ref' '
+	echo $commit >expect &&
+	git rev-parse --verify HEAD >actual &&
+	test_cmp expect actual
+'
 
 test_done

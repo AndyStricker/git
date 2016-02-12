@@ -98,25 +98,34 @@ test_foobar_foobar() {
 	'
 }
 
-if ! test_have_prereq POSIXPERM || ! [ -w / ]; then
-	say "Dangerous test skipped. Read this test if you want to execute it"
+if ! test -w /
+then
+	skip_all="Test requiring writable / skipped. Read this test if you want to run it"
+	test_done
+fi
+
+if  test -e /refs || test -e /objects || test -e /info || test -e /hooks ||
+    test -e /.git || test -e /foo || test -e /me
+then
+	skip_all="Skip test that clobbers existing files in /"
 	test_done
 fi
 
 if [ "$IKNOWWHATIAMDOING" != "YES" ]; then
-	say "You must set env var IKNOWWHATIAMDOING=YES in order to run this test"
+	skip_all="You must set env var IKNOWWHATIAMDOING=YES in order to run this test"
 	test_done
 fi
 
-if [ "$UID" = 0 ]; then
-	say "No you can't run this with root"
+if ! test_have_prereq NOT_ROOT
+then
+	skip_all="No you can't run this as root"
 	test_done
 fi
 
 ONE_SHA1=d00491fd7e5bb6fa28c517a0bb32b8b506539d4d
 
 test_expect_success 'setup' '
-	rm -rf /foo
+	rm -rf /foo &&
 	mkdir /foo &&
 	mkdir /foo/bar &&
 	echo 1 > /foo/foome &&
@@ -134,8 +143,8 @@ cat >ls.expected <<EOF
 100644 $ONE_SHA1 0	me
 EOF
 
-export GIT_DIR="$TRASH_DIRECTORY/.git"
-export GIT_WORK_TREE=/
+GIT_DIR="$TRASH_DIRECTORY/.git" && export GIT_DIR
+GIT_WORK_TREE=/ && export GIT_WORK_TREE
 
 test_vars 'abs gitdir, root' "$GIT_DIR" "/" ""
 test_foobar_root
@@ -154,24 +163,24 @@ say "GIT_DIR relative, GIT_WORK_TREE set"
 
 test_expect_success 'go to /' 'cd /'
 
-export GIT_DIR="$(echo $TRASH_DIRECTORY|sed 's,^/,,')/.git"
-export GIT_WORK_TREE=/
+GIT_DIR="$(echo $TRASH_DIRECTORY|sed 's,^/,,')/.git" && export GIT_DIR
+GIT_WORK_TREE=/ && export GIT_WORK_TREE
 
 test_vars 'rel gitdir, root' "$GIT_DIR" "/" ""
 test_foobar_root
 
 test_expect_success 'go to /foo' 'cd /foo'
 
-export GIT_DIR="../$TRASH_DIRECTORY/.git"
-export GIT_WORK_TREE=/
+GIT_DIR="../$TRASH_DIRECTORY/.git" && export GIT_DIR
+GIT_WORK_TREE=/ && export GIT_WORK_TREE
 
 test_vars 'rel gitdir, foo' "$TRASH_DIRECTORY/.git" "/" "foo/"
 test_foobar_foo
 
 test_expect_success 'go to /foo/bar' 'cd /foo/bar'
 
-export GIT_DIR="../../$TRASH_DIRECTORY/.git"
-export GIT_WORK_TREE=/
+GIT_DIR="../../$TRASH_DIRECTORY/.git" && export GIT_DIR
+GIT_WORK_TREE=/ && export GIT_WORK_TREE
 
 test_vars 'rel gitdir, foo/bar' "$TRASH_DIRECTORY/.git" "/" "foo/bar/"
 test_foobar_foobar
@@ -180,24 +189,24 @@ say "GIT_DIR relative, GIT_WORK_TREE relative"
 
 test_expect_success 'go to /' 'cd /'
 
-export GIT_DIR="$(echo $TRASH_DIRECTORY|sed 's,^/,,')/.git"
-export GIT_WORK_TREE=.
+GIT_DIR="$(echo $TRASH_DIRECTORY|sed 's,^/,,')/.git" && export GIT_DIR
+GIT_WORK_TREE=. && export GIT_WORK_TREE
 
 test_vars 'rel gitdir, root' "$GIT_DIR" "/" ""
 test_foobar_root
 
 test_expect_success 'go to /' 'cd /foo'
 
-export GIT_DIR="../$TRASH_DIRECTORY/.git"
-export GIT_WORK_TREE=..
+GIT_DIR="../$TRASH_DIRECTORY/.git" && export GIT_DIR
+GIT_WORK_TREE=.. && export GIT_WORK_TREE
 
 test_vars 'rel gitdir, foo' "$TRASH_DIRECTORY/.git" "/" "foo/"
 test_foobar_foo
 
 test_expect_success 'go to /foo/bar' 'cd /foo/bar'
 
-export GIT_DIR="../../$TRASH_DIRECTORY/.git"
-export GIT_WORK_TREE=../..
+GIT_DIR="../../$TRASH_DIRECTORY/.git" && export GIT_DIR
+GIT_WORK_TREE=../.. && export GIT_WORK_TREE
 
 test_vars 'rel gitdir, foo/bar' "$TRASH_DIRECTORY/.git" "/" "foo/bar/"
 test_foobar_foobar
@@ -209,7 +218,7 @@ unset GIT_WORK_TREE
 
 test_expect_success 'go to /' 'cd /'
 test_expect_success 'setup' '
-	rm -rf /.git
+	rm -rf /.git &&
 	echo "Initialized empty Git repository in /.git/" > expected &&
 	git init > result &&
 	test_cmp expected result
@@ -232,8 +241,8 @@ say "auto bare gitdir"
 
 # DESTROYYYYY!!!!!
 test_expect_success 'setup' '
-	rm -rf /refs /objects /info /hooks
-	rm /*
+	rm -rf /refs /objects /info /hooks &&
+	rm -f /expected /ls.expected /me /result &&
 	cd / &&
 	echo "Initialized empty Git repository in /" > expected &&
 	git init --bare > result &&

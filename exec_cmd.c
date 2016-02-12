@@ -3,11 +3,10 @@
 #include "quote.h"
 #define MAX_ARGS	32
 
-extern char **environ;
 static const char *argv_exec_path;
 static const char *argv0_path;
 
-const char *system_path(const char *path)
+char *system_path(const char *path)
 {
 #ifdef RUNTIME_PREFIX
 	static const char *prefix;
@@ -17,7 +16,7 @@ const char *system_path(const char *path)
 	struct strbuf d = STRBUF_INIT;
 
 	if (is_absolute_path(path))
-		return path;
+		return xstrdup(path);
 
 #ifdef RUNTIME_PREFIX
 	assert(argv0_path);
@@ -35,8 +34,7 @@ const char *system_path(const char *path)
 #endif
 
 	strbuf_addf(&d, "%s/%s", prefix, path);
-	path = strbuf_detach(&d, NULL);
-	return path;
+	return strbuf_detach(&d, NULL);
 }
 
 const char *git_extract_argv0_path(const char *argv0)
@@ -87,11 +85,7 @@ const char *git_exec_path(void)
 static void add_path(struct strbuf *out, const char *path)
 {
 	if (path && *path) {
-		if (is_absolute_path(path))
-			strbuf_addstr(out, path);
-		else
-			strbuf_addstr(out, make_nonrelative_path(path));
-
+		strbuf_add_absolute_path(out, path);
 		strbuf_addch(out, PATH_SEP);
 	}
 }
@@ -102,12 +96,11 @@ void setup_path(void)
 	struct strbuf new_path = STRBUF_INIT;
 
 	add_path(&new_path, git_exec_path());
-	add_path(&new_path, argv0_path);
 
 	if (old_path)
 		strbuf_addstr(&new_path, old_path);
 	else
-		strbuf_addstr(&new_path, "/usr/local/bin:/usr/bin:/bin");
+		strbuf_addstr(&new_path, _PATH_DEFPATH);
 
 	setenv("PATH", new_path.buf, 1);
 
@@ -135,7 +128,7 @@ int execv_git_cmd(const char **argv) {
 	trace_argv_printf(nargv, "trace: exec:");
 
 	/* execvp() can only ever return if it fails */
-	execvp("git", (char **)nargv);
+	sane_execvp("git", (char **)nargv);
 
 	trace_printf("trace: exec failed: %s\n", strerror(errno));
 

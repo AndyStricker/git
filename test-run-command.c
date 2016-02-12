@@ -15,9 +15,7 @@
 
 int main(int argc, char **argv)
 {
-	struct child_process proc;
-
-	memset(&proc, 0, sizeof(proc));
+	struct child_process proc = CHILD_PROCESS_INIT;
 
 	if (argc < 3)
 		return 1;
@@ -29,6 +27,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "FAIL %s\n", argv[1]);
 		return 1;
 	}
+	if (!strcmp(argv[1], "run-command"))
+		exit(run_command(&proc));
 
 	fprintf(stderr, "check usage\n");
 	return 1;

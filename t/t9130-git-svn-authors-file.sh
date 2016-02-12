@@ -20,7 +20,7 @@ test_expect_success 'setup svnrepo' '
 	'
 
 test_expect_success 'start import with incomplete authors file' '
-	! git svn clone --authors-file=svn-authors "$svnrepo" x
+	test_must_fail git svn clone --authors-file=svn-authors "$svnrepo" x
 	'
 
 test_expect_success 'imported 2 revisions successfully' '
@@ -63,11 +63,11 @@ test_expect_success 'authors-file against globs' '
 	'
 
 test_expect_success 'fetch fails on ee' '
-	( cd aa-work && ! git svn fetch --authors-file=../svn-authors )
+	( cd aa-work && test_must_fail git svn fetch --authors-file=../svn-authors )
 	'
 
 tmp_config_get () {
-	GIT_CONFIG=.git/svn/.metadata git config --get "$1"
+	git config --file=.git/svn/.metadata --get "$1"
 }
 
 test_expect_success 'failure happened without negative side effects' '
@@ -95,12 +95,8 @@ test_expect_success 'fresh clone with svn.authors-file in config' '
 	(
 		rm -r "$GIT_DIR" &&
 		test x = x"$(git config svn.authorsfile)" &&
-		HOME="`pwd`" &&
-		export HOME &&
 		test_config="$HOME"/.gitconfig &&
-		unset GIT_CONFIG_NOGLOBAL &&
-		unset GIT_DIR &&
-		unset GIT_CONFIG &&
+		sane_unset GIT_DIR &&
 		git config --global \
 		  svn.authorsfile "$HOME"/svn-authors &&
 		test x"$HOME"/svn-authors = x"$(git config svn.authorsfile)" &&

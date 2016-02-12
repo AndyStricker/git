@@ -8,22 +8,24 @@ test_description='git svn fetching'
 
 test_expect_success 'initialize repo' '
 	mkdir import &&
-	cd import &&
-	mkdir -p trunk &&
-	echo hello > trunk/readme &&
-	svn_cmd import -m "initial" . "$svnrepo" &&
-	cd .. &&
+	(
+		cd import &&
+		mkdir -p trunk &&
+		echo hello >trunk/readme &&
+		svn_cmd import -m "initial" . "$svnrepo"
+	) &&
 	svn_cmd co "$svnrepo" wc &&
-	cd wc &&
-	echo world >> trunk/readme &&
-	poke trunk/readme &&
-	svn_cmd commit -m "another commit" &&
-	svn_cmd up &&
-	svn_cmd mv trunk thunk &&
-	echo goodbye >> thunk/readme &&
-	poke thunk/readme &&
-	svn_cmd commit -m "bye now" &&
-	cd ..
+	(
+		cd wc &&
+		echo world >>trunk/readme &&
+		poke trunk/readme &&
+		svn_cmd commit -m "another commit" &&
+		svn_cmd up &&
+		svn_cmd mv trunk thunk &&
+		echo goodbye >>thunk/readme &&
+		poke thunk/readme &&
+		svn_cmd commit -m "bye now"
+	)
 	'
 
 test_expect_success 'init and fetch a moved directory' '
@@ -70,29 +72,32 @@ test_expect_success 'follow larger parent' '
         svn import -m "import a larger parent" import "$svnrepo"/larger-parent &&
         svn cp -m "hi" "$svnrepo"/larger-parent "$svnrepo"/another-larger &&
         git svn init --minimize-url -i larger \
-          "$svnrepo"/another-larger/trunk/thunk/bump/thud &&
+	  "$svnrepo"/larger-parent/trunk/thunk/bump/thud &&
         git svn fetch -i larger &&
+	git svn init --minimize-url -i larger-parent \
+	  "$svnrepo"/another-larger/trunk/thunk/bump/thud &&
+	git svn fetch -i larger-parent &&
         git rev-parse --verify refs/remotes/larger &&
         git rev-parse --verify \
-           refs/remotes/larger-parent/trunk/thunk/bump/thud &&
+	   refs/remotes/larger-parent &&
         test "`git merge-base \
-                 refs/remotes/larger-parent/trunk/thunk/bump/thud \
+		 refs/remotes/larger-parent \
                  refs/remotes/larger`" = \
              "`git rev-parse refs/remotes/larger`"
-        true
         '
 
 test_expect_success 'follow higher-level parent' '
-        svn mkdir -m "follow higher-level parent" "$svnrepo"/blob &&
-        svn co "$svnrepo"/blob blob &&
-        cd blob &&
-                echo hi > hi &&
-                svn add hi &&
-                svn commit -m "hihi" &&
-                cd ..
-        svn mkdir -m "new glob at top level" "$svnrepo"/glob &&
-        svn mv -m "move blob down a level" "$svnrepo"/blob "$svnrepo"/glob/blob &&
-        git svn init --minimize-url -i blob "$svnrepo"/glob/blob &&
+	svn mkdir -m "follow higher-level parent" "$svnrepo"/blob &&
+	svn co "$svnrepo"/blob blob &&
+	(
+		cd blob &&
+		echo hi > hi &&
+		svn add hi &&
+		svn commit -m "hihi"
+	) &&
+	svn mkdir -m "new glob at top level" "$svnrepo"/glob &&
+	svn mv -m "move blob down a level" "$svnrepo"/blob "$svnrepo"/glob/blob &&
+	git svn init --minimize-url -i blob "$svnrepo"/glob/blob &&
         git svn fetch -i blob
         '
 
@@ -117,18 +122,23 @@ test_expect_success 'follow-parent avoids deleting relevant info' '
 	   import/trunk/subversion/bindings/swig/perl/t/larger-parent &&
 	  echo "bad delete test 2" > \
 	   import/trunk/subversion/bindings/swig/perl/another-larger &&
-	cd import &&
-	  svn import -m "r9270 test" . "$svnrepo"/r9270 &&
-	cd .. &&
+	(
+		cd import &&
+		svn import -m "r9270 test" . "$svnrepo"/r9270
+	) &&
 	svn_cmd co "$svnrepo"/r9270/trunk/subversion/bindings/swig/perl r9270 &&
-	cd r9270 &&
-	  svn mkdir native &&
-	  svn mv t native/t &&
-	  for i in a b c; do svn mv $i.pm native/$i.pm; done &&
-	  echo z >> native/t/c.t &&
-	  poke native/t/c.t &&
-	  svn commit -m "reorg test" &&
-	cd .. &&
+	(
+		cd r9270 &&
+		svn mkdir native &&
+		svn mv t native/t &&
+		for i in a b c
+		do
+			svn mv $i.pm native/$i.pm
+		done &&
+		echo z >>native/t/c.t &&
+		poke native/t/c.t &&
+		svn commit -m "reorg test"
+	) &&
 	git svn init --minimize-url -i r9270-t \
 	  "$svnrepo"/r9270/trunk/subversion/bindings/swig/perl/native/t &&
 	git svn fetch -i r9270-t &&
@@ -182,7 +192,7 @@ test_expect_success "follow-parent is atomic" '
 	git svn init --minimize-url -i stunk "$svnrepo"/stunk &&
 	git svn fetch -i stunk &&
 	git svn init --minimize-url -i flunked "$svnrepo"/flunked &&
-	git svn fetch -i flunked
+	git svn fetch -i flunked &&
 	test "`git rev-parse --verify refs/remotes/flunk@18`" \
 	   = "`git rev-parse --verify refs/remotes/stunk`" &&
 	test "`git rev-parse --verify refs/remotes/flunk~1`" \
