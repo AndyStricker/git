@@ -1,9 +1,8 @@
-#!/bin/sh
+# This shell library is Git's interface to gettext.sh. See po/README
+# for usage instructions.
 #
 # Copyright (c) 2010 Ævar Arnfjörð Bjarmason
 #
-# This is Git's interface to gettext.sh. See po/README for usage
-# instructions.
 
 # Export the TEXTDOMAIN* data that we need for Git
 TEXTDOMAIN=git
@@ -21,7 +20,7 @@ GIT_INTERNAL_GETTEXT_SH_SCHEME=fallthrough
 if test -n "@@USE_GETTEXT_SCHEME@@"
 then
 	GIT_INTERNAL_GETTEXT_SH_SCHEME="@@USE_GETTEXT_SCHEME@@"
-elif test -n "@@USE_FALLTHROUGH_GETTEXT_SCHEME@@$GIT_INTERNAL_GETTEXT_TEST_FALLBACKS"
+elif test -n "$GIT_INTERNAL_GETTEXT_TEST_FALLBACKS"
 then
 	: no probing necessary
 elif test -n "$GIT_GETTEXT_POISON"

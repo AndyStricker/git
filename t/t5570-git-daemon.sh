@@ -3,11 +3,17 @@
 test_description='test fetching over git protocol'
 . ./test-lib.sh
 
-LIB_GIT_DAEMON_PORT=${LIB_GIT_DAEMON_PORT-5570}
 . "$TEST_DIRECTORY"/lib-git-daemon.sh
 start_git_daemon
 
+check_verbose_connect () {
+	grep -F "Looking up 127.0.0.1 ..." stderr &&
+	grep -F "Connecting to 127.0.0.1 (port " stderr &&
+	grep -F "done." stderr
+}
+
 test_expect_success 'setup repository' '
+	git config push.default matching &&
 	echo content >file &&
 	git add file &&
 	git commit -m one
@@ -24,7 +30,8 @@ test_expect_success 'create git-accessible bare repository' '
 '
 
 test_expect_success 'clone git repository' '
-	git clone "$GIT_DAEMON_URL/repo.git" clone &&
+	git clone -v "$GIT_DAEMON_URL/repo.git" clone 2>stderr &&
+	check_verbose_connect &&
 	test_cmp file clone/file
 '
 
@@ -32,11 +39,22 @@ test_expect_success 'fetch changes via git protocol' '
 	echo content >>file &&
 	git commit -a -m two &&
 	git push public &&
-	(cd clone && git pull) &&
+	(cd clone && git pull -v) 2>stderr &&
+	check_verbose_connect &&
 	test_cmp file clone/file
 '
 
-test_expect_failure 'remote detects correct HEAD' '
+test_expect_success 'no-op fetch -v stderr is as expected' '
+	(cd clone && git fetch -v) 2>stderr &&
+	check_verbose_connect
+'
+
+test_expect_success 'no-op fetch without "-v" is quiet' '
+	(cd clone && git fetch) 2>stderr &&
+	! test -s stderr
+'
+
+test_expect_success 'remote detects correct HEAD' '
 	git push public master:other &&
 	(cd clone &&
 	 git remote set-head -d origin &&
@@ -57,7 +75,7 @@ test_expect_success 'prepare pack objects' '
 test_expect_success 'fetch notices corrupt pack' '
 	cp -R "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_pack.git "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_bad1.git &&
 	(cd "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_bad1.git &&
-	 p=`ls objects/pack/pack-*.pack` &&
+	 p=$(ls objects/pack/pack-*.pack) &&
 	 chmod u+w $p &&
 	 printf %0256d 0 | dd of=$p bs=256 count=1 seek=1 conv=notrunc
 	) &&
@@ -65,14 +83,14 @@ test_expect_success 'fetch notices corrupt pack' '
 	(cd repo_bad1.git &&
 	 git --bare init &&
 	 test_must_fail git --bare fetch "$GIT_DAEMON_URL/repo_bad1.git" &&
-	 test 0 = `ls objects/pack/pack-*.pack | wc -l`
+	 test 0 = $(ls objects/pack/pack-*.pack | wc -l)
 	)
 '
 
 test_expect_success 'fetch notices corrupt idx' '
 	cp -R "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_pack.git "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_bad2.git &&
 	(cd "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_bad2.git &&
-	 p=`ls objects/pack/pack-*.idx` &&
+	 p=$(ls objects/pack/pack-*.idx) &&
 	 chmod u+w $p &&
 	 printf %0256d 0 | dd of=$p bs=256 count=1 seek=1 conv=notrunc
 	) &&
@@ -80,7 +98,7 @@ test_expect_success 'fetch notices corrupt idx' '
 	(cd repo_bad2.git &&
 	 git --bare init &&
 	 test_must_fail git --bare fetch "$GIT_DAEMON_URL/repo_bad2.git" &&
-	 test 0 = `ls objects/pack | wc -l`
+	 test 0 = $(ls objects/pack | wc -l)
 	)
 '
 
@@ -103,14 +121,12 @@ test_remote_error()
 		esac
 	done
 
-	if test $# -ne 3
-	then
-		error "invalid number of arguments"
-	fi
-
+	msg=$1
+	shift
 	cmd=$1
-	repo=$2
-	msg=$3
+	shift
+	repo=$1
+	shift || error "invalid number of arguments"
 
 	if test -x "$GIT_DAEMON_DOCUMENT_ROOT_PATH/$repo"
 	then
@@ -122,27 +138,53 @@ test_remote_error()
 		fi
 	fi
 
-	test_must_fail git "$cmd" "$GIT_DAEMON_URL/$repo" 2>output &&
-	echo "fatal: remote error: $msg: /$repo" >expect &&
-	test_cmp expect output
+	test_must_fail git "$cmd" "$GIT_DAEMON_URL/$repo" "$@" 2>output &&
+	test_i18ngrep "fatal: remote error: $msg: /$repo" output &&
 	ret=$?
 	chmod +x "$GIT_DAEMON_DOCUMENT_ROOT_PATH/repo.git"
 	(exit $ret)
 }
 
 msg="access denied or repository not exported"
-test_expect_success 'clone non-existent' "test_remote_error    clone nowhere.git '$msg'"
-test_expect_success 'push disabled'      "test_remote_error    push  repo.git    '$msg'"
-test_expect_success 'read access denied' "test_remote_error -x fetch repo.git    '$msg'"
-test_expect_success 'not exported'       "test_remote_error -n fetch repo.git    '$msg'"
+test_expect_success 'clone non-existent' "test_remote_error    '$msg' clone nowhere.git    "
+test_expect_success 'push disabled'      "test_remote_error    '$msg' push  repo.git master"
+test_expect_success 'read access denied' "test_remote_error -x '$msg' fetch repo.git       "
+test_expect_success 'not exported'       "test_remote_error -n '$msg' fetch repo.git       "
 
 stop_git_daemon
 start_git_daemon --informative-errors
 
-test_expect_success 'clone non-existent' "test_remote_error    clone nowhere.git 'no such repository'"
-test_expect_success 'push disabled'      "test_remote_error    push  repo.git    'service not enabled'"
-test_expect_success 'read access denied' "test_remote_error -x fetch repo.git    'no such repository'"
-test_expect_success 'not exported'       "test_remote_error -n fetch repo.git    'repository not exported'"
+test_expect_success 'clone non-existent' "test_remote_error    'no such repository'      clone nowhere.git    "
+test_expect_success 'push disabled'      "test_remote_error    'service not enabled'     push  repo.git master"
+test_expect_success 'read access denied' "test_remote_error -x 'no such repository'      fetch repo.git       "
+test_expect_success 'not exported'       "test_remote_error -n 'repository not exported' fetch repo.git       "
+
+stop_git_daemon
+start_git_daemon --interpolated-path="$GIT_DAEMON_DOCUMENT_ROOT_PATH/%H%D"
+
+test_expect_success 'access repo via interpolated hostname' '
+	repo="$GIT_DAEMON_DOCUMENT_ROOT_PATH/localhost/interp.git" &&
+	git init --bare "$repo" &&
+	git push "$repo" HEAD &&
+	>"$repo"/git-daemon-export-ok &&
+	rm -rf tmp.git &&
+	GIT_OVERRIDE_VIRTUAL_HOST=localhost \
+		git clone --bare "$GIT_DAEMON_URL/interp.git" tmp.git &&
+	rm -rf tmp.git &&
+	GIT_OVERRIDE_VIRTUAL_HOST=LOCALHOST \
+		git clone --bare "$GIT_DAEMON_URL/interp.git" tmp.git
+'
+
+test_expect_success 'hostname cannot break out of directory' '
+	rm -rf tmp.git &&
+	repo="$GIT_DAEMON_DOCUMENT_ROOT_PATH/../escape.git" &&
+	git init --bare "$repo" &&
+	git push "$repo" HEAD &&
+	>"$repo"/git-daemon-export-ok &&
+	test_must_fail \
+		env GIT_OVERRIDE_VIRTUAL_HOST=.. \
+		git clone --bare "$GIT_DAEMON_URL/escape.git" tmp.git
+'
 
 stop_git_daemon
 test_done

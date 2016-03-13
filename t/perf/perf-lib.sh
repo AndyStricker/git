@@ -1,4 +1,6 @@
-#!/bin/sh
+# Performance testing framework.  Each perf script starts much like
+# a normal test script, except it sources this library instead of
+# test-lib.sh.  See t/perf/README for documentation.
 #
 # Copyright (c) 2011 Thomas Rast
 #
@@ -42,8 +44,13 @@ else
 fi
 
 TEST_NO_CREATE_REPO=t
+TEST_NO_MALLOC_CHECK=t
 
 . ../test-lib.sh
+
+# Variables from test-lib that are normally internal to the tests; we
+# need to export them for test_perf subshells
+export TEST_DIRECTORY TRASH_DIRECTORY GIT_BUILD_DIR GIT_TEST_CMP
 
 perf_results_dir=$TEST_OUTPUT_DIRECTORY/test-results
 mkdir -p "$perf_results_dir"
@@ -84,7 +91,7 @@ test_perf_create_repo_from () {
 				*/objects|*/hooks|*/config)
 					;;
 				*)
-					cp -R "$stuff" . || break
+					cp -R "$stuff" . || exit 1
 					;;
 			esac
 		done &&
@@ -119,7 +126,7 @@ test_run_perf_ () {
 	test_export_="test_cleanup"
 	export test_cleanup test_export_
 	/usr/bin/time -f "%E %U %S" -o test_time.$i "$SHELL" -c '
-. '"$TEST_DIRECTORY"/../test-lib-functions.sh'
+. '"$TEST_DIRECTORY"/test-lib-functions.sh'
 test_export () {
 	[ $# != 0 ] || return 0
 	test_export_="$test_export_\\|$1"
@@ -145,6 +152,7 @@ exit $ret' >&3 2>&4
 
 
 test_perf () {
+	test_start_
 	test "$#" = 3 && { test_prereq=$1; shift; } || test_prereq=
 	test "$#" = 2 ||
 	error "bug in the test script: not 2 or 3 parameters to test-expect-success"
@@ -155,16 +163,16 @@ test_perf () {
 		echo "$test_count" >>"$perf_results_dir"/$base.subtests
 		echo "$1" >"$perf_results_dir"/$base.$test_count.descr
 		if test -z "$verbose"; then
-			echo -n "perf $test_count - $1:"
+			printf "%s" "perf $test_count - $1:"
 		else
 			echo "perf $test_count - $1:"
 		fi
-		for i in $(seq 1 $GIT_PERF_REPEAT_COUNT); do
+		for i in $(test_seq 1 $GIT_PERF_REPEAT_COUNT); do
 			say >&3 "running: $2"
 			if test_run_perf_ "$2"
 			then
 				if test -z "$verbose"; then
-					echo -n " $i"
+					printf " %s" "$i"
 				else
 					echo "* timing run $i/$GIT_PERF_REPEAT_COUNT:"
 				fi
@@ -182,7 +190,7 @@ test_perf () {
 		base="$perf_results_dir"/"$perf_results_prefix$(basename "$0" .sh)"."$test_count"
 		"$TEST_DIRECTORY"/perf/min_time.perl test_time.* >"$base".times
 	fi
-	echo >&3 ""
+	test_finish_
 }
 
 # We extend test_done to print timings at the end (./run disables this

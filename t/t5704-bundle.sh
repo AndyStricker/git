@@ -14,7 +14,10 @@ test_expect_success 'setup' '
 	git tag -d third
 '
 
-test_expect_success 'tags can be excluded by rev-list options' '
+test_expect_success 'annotated tags can be excluded by rev-list options' '
+	git bundle create bundle --all --since=7.Apr.2005.15:14:00.-0700 &&
+	git ls-remote bundle > output &&
+	grep tag output &&
 	git bundle create bundle --all --since=7.Apr.2005.15:16:00.-0700 &&
 	git ls-remote bundle > output &&
 	! grep tag output
@@ -56,6 +59,16 @@ test_expect_success 'ridiculously long subject in boundary' '
 	git fetch long-subject-bundle.bdl &&
 	sed -n "/^-/{p;q;}" long-subject-bundle.bdl >boundary &&
 	grep "^-[0-9a-f]\\{40\\} " boundary
+'
+
+test_expect_success 'prerequisites with an empty commit message' '
+	: >file1 &&
+	git add file1 &&
+	test_tick &&
+	git commit --allow-empty-message -m "" &&
+	test_commit file2 &&
+	git bundle create bundle HEAD^.. &&
+	git bundle verify bundle
 '
 
 test_done

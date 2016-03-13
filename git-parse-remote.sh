@@ -1,4 +1,6 @@
-#!/bin/sh
+# This is a shell library to calculate the remote repository and
+# upstream branch that should be pulled by "git pull" from the current
+# branch.
 
 # git-ls-remote could be called from outside a git managed repository;
 # this would fail in that case and would issue an error message.
@@ -80,7 +82,7 @@ See git-${cmd}(1) for details
 
 If you wish to set tracking information for this branch you can do so with:
 
-    git branch --set-upstream ${branch_name#refs/heads/} $remote/<branch>
+    git branch --set-upstream-to=$remote/<branch> ${branch_name#refs/heads/}
 "
 	fi
 	exit 1

@@ -11,37 +11,31 @@
  * something different on Windows.
  */
 
-#ifndef WIN32
-static void pager_preexec(void)
+static struct child_process pager_process = CHILD_PROCESS_INIT;
+
+static void wait_for_pager(int in_signal)
 {
-	/*
-	 * Work around bug in "less" by not starting it until we
-	 * have real input
-	 */
-	fd_set in;
-
-	FD_ZERO(&in);
-	FD_SET(0, &in);
-	select(1, &in, NULL, &in, NULL);
-}
-#endif
-
-static const char *pager_argv[] = { NULL, NULL };
-static struct child_process pager_process;
-
-static void wait_for_pager(void)
-{
-	fflush(stdout);
-	fflush(stderr);
+	if (!in_signal) {
+		fflush(stdout);
+		fflush(stderr);
+	}
 	/* signal EOF to pager */
 	close(1);
 	close(2);
-	finish_command(&pager_process);
+	if (in_signal)
+		finish_command_in_signal(&pager_process);
+	else
+		finish_command(&pager_process);
+}
+
+static void wait_for_pager_atexit(void)
+{
+	wait_for_pager(0);
 }
 
 static void wait_for_pager_signal(int signo)
 {
-	wait_for_pager();
+	wait_for_pager(1);
 	sigchain_pop(signo);
 	raise(signo);
 }
@@ -63,10 +57,20 @@ const char *git_pager(int stdout_is_tty)
 		pager = getenv("PAGER");
 	if (!pager)
 		pager = DEFAULT_PAGER;
-	else if (!*pager || !strcmp(pager, "cat"))
+	if (!*pager || !strcmp(pager, "cat"))
 		pager = NULL;
 
 	return pager;
+}
+
+void prepare_pager_args(struct child_process *pager_process, const char *pager)
+{
+	argv_array_push(&pager_process->args, pager);
+	pager_process->use_shell = 1;
+	if (!getenv("LESS"))
+		argv_array_push(&pager_process->env_array, "LESS=FRX");
+	if (!getenv("LV"))
+		argv_array_push(&pager_process->env_array, "LV=-c");
 }
 
 void setup_pager(void)
@@ -85,17 +89,9 @@ void setup_pager(void)
 	setenv("GIT_PAGER_IN_USE", "true", 1);
 
 	/* spawn the pager */
-	pager_argv[0] = pager;
-	pager_process.use_shell = 1;
-	pager_process.argv = pager_argv;
+	prepare_pager_args(&pager_process, pager);
 	pager_process.in = -1;
-	if (!getenv("LESS")) {
-		static const char *env[] = { "LESS=FRSX", NULL };
-		pager_process.env = env;
-	}
-#ifndef WIN32
-	pager_process.preexec_cb = pager_preexec;
-#endif
+	argv_array_push(&pager_process.env_array, "GIT_PAGER_IN_USE");
 	if (start_command(&pager_process))
 		return;
 
@@ -107,7 +103,7 @@ void setup_pager(void)
 
 	/* this makes sure that the parent terminates after the pager */
 	sigchain_push_common(wait_for_pager_signal);
-	atexit(wait_for_pager);
+	atexit(wait_for_pager_atexit);
 }
 
 int pager_in_use(void)
@@ -151,11 +147,32 @@ int term_columns(void)
 /*
  * How many columns do we need to show this number in decimal?
  */
-int decimal_width(int number)
+int decimal_width(uintmax_t number)
 {
-	int i, width;
+	int width;
 
-	for (width = 1, i = 10; i <= number; width++)
-		i *= 10;
+	for (width = 1; number >= 10; width++)
+		number /= 10;
 	return width;
+}
+
+/* returns 0 for "no pager", 1 for "use pager", and -1 for "not specified" */
+int check_pager_config(const char *cmd)
+{
+	int want = -1;
+	struct strbuf key = STRBUF_INIT;
+	const char *value = NULL;
+	strbuf_addf(&key, "pager.%s", cmd);
+	if (git_config_key_is_valid(key.buf) &&
+	    !git_config_get_value(key.buf, &value)) {
+		int b = git_config_maybe_bool(key.buf, value);
+		if (b >= 0)
+			want = b;
+		else {
+			want = 1;
+			pager_program = xstrdup(value);
+		}
+	}
+	strbuf_release(&key);
+	return want;
 }
