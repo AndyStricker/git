@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/usr/bin/perl
 #
 # This tool is copyright (c) 2005, Martin Langhoff.
 # It is released under the Gnu Public License, version 2.
@@ -54,6 +54,7 @@ and can contain multiple, unrelated branches.
 
 =cut
 
+use 5.008;
 use strict;
 use warnings;
 use Getopt::Std;
@@ -74,7 +75,7 @@ our($opt_h,$opt_f,$opt_v,$opt_T,$opt_t,$opt_D,$opt_a,$opt_o);
 
 sub usage() {
     print STDERR <<END;
-Usage: git archimport     # fetch/update GIT from Arch
+usage: git archimport     # fetch/update GIT from Arch
        [ -h ] [ -v ] [ -o ] [ -a ] [ -f ] [ -T ] [ -D depth ] [ -t tempdir ]
        repository/arch-branch [ repository/arch-branch] ...
 END
@@ -982,7 +983,7 @@ sub find_parents {
 	# check that we actually know about the branch
 	next unless -e "$git_dir/refs/heads/$branch";
 
-	my $mergebase = `git-merge-base $branch $ps->{branch}`;
+	my $mergebase = safe_pipe_capture(qw(git-merge-base), $branch, $ps->{branch});
 	if ($?) {
 	    # Don't die here, Arch supports one-way cherry-picking
 	    # between branches with no common base (or any relationship
@@ -1073,7 +1074,7 @@ sub find_parents {
 
 sub git_rev_parse {
     my $name = shift;
-    my $val  = `git-rev-parse $name`;
+    my $val  = safe_pipe_capture(qw(git-rev-parse), $name);
     die "Error: git-rev-parse $name" if $?;
     chomp $val;
     return $val;
