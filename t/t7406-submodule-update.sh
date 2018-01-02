@@ -14,8 +14,8 @@ submodule and "git submodule update --rebase/--merge" does not detach the HEAD.
 
 compare_head()
 {
-    sha_master=`git rev-list --max-count=1 master`
-    sha_head=`git rev-list --max-count=1 HEAD`
+    sha_master=$(git rev-list --max-count=1 master)
+    sha_head=$(git rev-list --max-count=1 HEAD)
 
     test "$sha_master" = "$sha_head"
 }
@@ -58,11 +58,15 @@ test_expect_success 'setup a submodule tree' '
 	 git submodule add ../merging merging &&
 	 test_tick &&
 	 git commit -m "rebasing"
-	)
+	) &&
 	(cd super &&
 	 git submodule add ../none none &&
 	 test_tick &&
 	 git commit -m "none"
+	) &&
+	git clone . recursivesuper &&
+	( cd recursivesuper
+	 git submodule add ../super super
 	)
 '
 
@@ -78,6 +82,79 @@ test_expect_success 'submodule update detaching the HEAD ' '
 	 cd submodule &&
 	 ! compare_head
 	)
+'
+
+test_expect_success 'submodule update from subdirectory' '
+	(cd super/submodule &&
+	 git reset --hard HEAD~1
+	) &&
+	mkdir super/sub &&
+	(cd super/sub &&
+	 (cd ../submodule &&
+	  compare_head
+	 ) &&
+	 git submodule update ../submodule &&
+	 cd ../submodule &&
+	 ! compare_head
+	)
+'
+
+supersha1=$(git -C super rev-parse HEAD)
+mergingsha1=$(git -C super/merging rev-parse HEAD)
+nonesha1=$(git -C super/none rev-parse HEAD)
+rebasingsha1=$(git -C super/rebasing rev-parse HEAD)
+submodulesha1=$(git -C super/submodule rev-parse HEAD)
+pwd=$(pwd)
+
+cat <<EOF >expect
+Submodule path '../super': checked out '$supersha1'
+Submodule path '../super/merging': checked out '$mergingsha1'
+Submodule path '../super/none': checked out '$nonesha1'
+Submodule path '../super/rebasing': checked out '$rebasingsha1'
+Submodule path '../super/submodule': checked out '$submodulesha1'
+EOF
+
+cat <<EOF >expect2
+Submodule 'merging' ($pwd/merging) registered for path '../super/merging'
+Submodule 'none' ($pwd/none) registered for path '../super/none'
+Submodule 'rebasing' ($pwd/rebasing) registered for path '../super/rebasing'
+Submodule 'submodule' ($pwd/submodule) registered for path '../super/submodule'
+Cloning into '$pwd/recursivesuper/super/merging'...
+done.
+Cloning into '$pwd/recursivesuper/super/none'...
+done.
+Cloning into '$pwd/recursivesuper/super/rebasing'...
+done.
+Cloning into '$pwd/recursivesuper/super/submodule'...
+done.
+EOF
+
+test_expect_success 'submodule update --init --recursive from subdirectory' '
+	git -C recursivesuper/super reset --hard HEAD^ &&
+	(cd recursivesuper &&
+	 mkdir tmp &&
+	 cd tmp &&
+	 git submodule update --init --recursive ../super >../../actual 2>../../actual2
+	) &&
+	test_i18ncmp expect actual &&
+	test_i18ncmp expect2 actual2
+'
+
+cat <<EOF >expect2
+Submodule 'foo/sub' ($pwd/withsubs/../rebasing) registered for path 'sub'
+EOF
+
+test_expect_success 'submodule update --init from and of subdirectory' '
+	git init withsubs &&
+	(cd withsubs &&
+	 mkdir foo &&
+	 git submodule add "$(pwd)/../rebasing" foo/sub &&
+	 (cd foo &&
+	  git submodule deinit -f sub &&
+	  git submodule update --init sub 2>../../actual2
+	 )
+	) &&
+	test_i18ncmp expect2 actual2
 '
 
 apos="'";
@@ -120,6 +197,82 @@ test_expect_success 'submodule update should throw away changes with --force ' '
 	 git submodule update --force submodule &&
 	 cd submodule &&
 	 ! compare_head
+	)
+'
+
+test_expect_success 'submodule update --force forcibly checks out submodules' '
+	(cd super &&
+	 (cd submodule &&
+	  rm -f file
+	 ) &&
+	 git submodule update --force submodule &&
+	 (cd submodule &&
+	  test "$(git status -s file)" = ""
+	 )
+	)
+'
+
+test_expect_success 'submodule update --remote should fetch upstream changes' '
+	(cd submodule &&
+	 echo line4 >> file &&
+	 git add file &&
+	 test_tick &&
+	 git commit -m "upstream line4"
+	) &&
+	(cd super &&
+	 git submodule update --remote --force submodule &&
+	 cd submodule &&
+	 test "$(git log -1 --oneline)" = "$(GIT_DIR=../../submodule/.git git log -1 --oneline)"
+	)
+'
+
+test_expect_success 'submodule update --remote should fetch upstream changes with .' '
+	(
+		cd super &&
+		git config -f .gitmodules submodule."submodule".branch "." &&
+		git add .gitmodules &&
+		git commit -m "submodules: update from the respective superproject branch"
+	) &&
+	(
+		cd submodule &&
+		echo line4a >> file &&
+		git add file &&
+		test_tick &&
+		git commit -m "upstream line4a" &&
+		git checkout -b test-branch &&
+		test_commit on-test-branch
+	) &&
+	(
+		cd super &&
+		git submodule update --remote --force submodule &&
+		git -C submodule log -1 --oneline >actual
+		git -C ../submodule log -1 --oneline master >expect
+		test_cmp expect actual &&
+		git checkout -b test-branch &&
+		git submodule update --remote --force submodule &&
+		git -C submodule log -1 --oneline >actual
+		git -C ../submodule log -1 --oneline test-branch >expect
+		test_cmp expect actual &&
+		git checkout master &&
+		git branch -d test-branch &&
+		git reset --hard HEAD^
+	)
+'
+
+test_expect_success 'local config should override .gitmodules branch' '
+	(cd submodule &&
+	 git checkout test-branch &&
+	 echo line5 >> file &&
+	 git add file &&
+	 test_tick &&
+	 git commit -m "upstream line5" &&
+	 git checkout master
+	) &&
+	(cd super &&
+	 git config submodule.submodule.branch test-branch &&
+	 git submodule update --remote --force submodule &&
+	 cd submodule &&
+	 test "$(git log -1 --oneline)" = "$(GIT_DIR=../../submodule/.git git log -1 --oneline test-branch)"
 	)
 '
 
@@ -236,6 +389,111 @@ test_expect_success 'submodule update - checkout in .git/config' '
 	)
 '
 
+test_expect_success 'submodule update - command in .git/config' '
+	(cd super &&
+	 git config submodule.submodule.update "!git checkout"
+	) &&
+	(cd super/submodule &&
+	  git reset --hard HEAD^
+	) &&
+	(cd super &&
+	 (cd submodule &&
+	  compare_head
+	 ) &&
+	 git submodule update submodule &&
+	 cd submodule &&
+	 ! compare_head
+	)
+'
+
+test_expect_success 'submodule update - command in .gitmodules is ignored' '
+	test_when_finished "git -C super reset --hard HEAD^" &&
+	git -C super config -f .gitmodules submodule.submodule.update "!false" &&
+	git -C super commit -a -m "add command to .gitmodules file" &&
+	git -C super/submodule reset --hard $submodulesha1^ &&
+	git -C super submodule update submodule
+'
+
+cat << EOF >expect
+Execution of 'false $submodulesha1' failed in submodule path 'submodule'
+EOF
+
+test_expect_success 'submodule update - command in .git/config catches failure' '
+	(cd super &&
+	 git config submodule.submodule.update "!false"
+	) &&
+	(cd super/submodule &&
+	  git reset --hard $submodulesha1^
+	) &&
+	(cd super &&
+	 test_must_fail git submodule update submodule 2>../actual
+	) &&
+	test_i18ncmp actual expect
+'
+
+cat << EOF >expect
+Execution of 'false $submodulesha1' failed in submodule path '../submodule'
+EOF
+
+test_expect_success 'submodule update - command in .git/config catches failure -- subdirectory' '
+	(cd super &&
+	 git config submodule.submodule.update "!false"
+	) &&
+	(cd super/submodule &&
+	  git reset --hard $submodulesha1^
+	) &&
+	(cd super &&
+	 mkdir tmp && cd tmp &&
+	 test_must_fail git submodule update ../submodule 2>../../actual
+	) &&
+	test_i18ncmp actual expect
+'
+
+test_expect_success 'submodule update - command run for initial population of submodule' '
+	cat >expect <<-EOF &&
+	Execution of '\''false $submodulesha1'\'' failed in submodule path '\''submodule'\''
+	EOF
+	rm -rf super/submodule &&
+	test_must_fail git -C super submodule update 2>actual &&
+	test_i18ncmp expect actual &&
+	git -C super submodule update --checkout
+'
+
+cat << EOF >expect
+Execution of 'false $submodulesha1' failed in submodule path '../super/submodule'
+Failed to recurse into submodule path '../super'
+EOF
+
+test_expect_success 'recursive submodule update - command in .git/config catches failure -- subdirectory' '
+	(cd recursivesuper &&
+	 git submodule update --remote super &&
+	 git add super &&
+	 git commit -m "update to latest to have more than one commit in submodules"
+	) &&
+	git -C recursivesuper/super config submodule.submodule.update "!false" &&
+	git -C recursivesuper/super/submodule reset --hard $submodulesha1^ &&
+	(cd recursivesuper &&
+	 mkdir -p tmp && cd tmp &&
+	 test_must_fail git submodule update --recursive ../super 2>../../actual
+	) &&
+	test_i18ncmp actual expect
+'
+
+test_expect_success 'submodule init does not copy command into .git/config' '
+	(cd super &&
+	 H=$(git ls-files -s submodule | cut -d" " -f2) &&
+	 mkdir submodule1 &&
+	 git update-index --add --cacheinfo 160000 $H submodule1 &&
+	 git config -f .gitmodules submodule.submodule1.path submodule1 &&
+	 git config -f .gitmodules submodule.submodule1.url ../submodule &&
+	 git config -f .gitmodules submodule.submodule1.update !false &&
+	 git submodule init submodule1 &&
+	 echo "none" >expect &&
+	 git config submodule.submodule1.update >actual &&
+	 test_cmp expect actual
+	)
+'
+
 test_expect_success 'submodule init picks up rebase' '
 	(cd super &&
 	 git config -f .gitmodules submodule.rebasing.update rebase &&
@@ -253,6 +511,7 @@ test_expect_success 'submodule init picks up merge' '
 '
 
 test_expect_success 'submodule update --merge  - ignores --merge  for new submodules' '
+	test_config -C super submodule.submodule.update checkout &&
 	(cd super &&
 	 rm -rf submodule &&
 	 git submodule update submodule &&
@@ -265,6 +524,7 @@ test_expect_success 'submodule update --merge  - ignores --merge  for new submod
 '
 
 test_expect_success 'submodule update --rebase - ignores --rebase for new submodules' '
+	test_config -C super submodule.submodule.update checkout &&
 	(cd super &&
 	 rm -rf submodule &&
 	 git submodule update submodule &&
@@ -367,7 +627,7 @@ test_expect_success 'submodule update continues after checkout error' '
 	 git submodule init &&
 	 git commit -am "new_submodule" &&
 	 (cd submodule2 &&
-	  git rev-parse --max-count=1 HEAD > ../expect
+	  git rev-parse --verify HEAD >../expect
 	 ) &&
 	 (cd submodule &&
 	  test_commit "update_submodule" file
@@ -384,7 +644,7 @@ test_expect_success 'submodule update continues after checkout error' '
 	 git checkout HEAD^ &&
 	 test_must_fail git submodule update &&
 	 (cd submodule2 &&
-	  git rev-parse --max-count=1 HEAD > ../actual
+	  git rev-parse --verify HEAD >../actual
 	 ) &&
 	 test_cmp expect actual
 	)
@@ -413,7 +673,7 @@ test_expect_success 'submodule update continues after recursive checkout error' 
 	  test_commit "update_submodule_again_again" file
 	 ) &&
 	 (cd submodule2 &&
-	  git rev-parse --max-count=1 HEAD > ../expect &&
+	  git rev-parse --verify HEAD >../expect &&
 	  test_commit "update_submodule2_again" file
 	 ) &&
 	 git add submodule &&
@@ -428,7 +688,7 @@ test_expect_success 'submodule update continues after recursive checkout error' 
 	 ) &&
 	 test_must_fail git submodule update --recursive &&
 	 (cd submodule2 &&
-	  git rev-parse --max-count=1 HEAD > ../actual
+	  git rev-parse --verify HEAD >../actual
 	 ) &&
 	 test_cmp expect actual
 	)
@@ -460,12 +720,12 @@ test_expect_success 'submodule update exit immediately in case of merge conflict
 	 ) &&
 	 git checkout HEAD^ &&
 	 (cd submodule2 &&
-	  git rev-parse --max-count=1 HEAD > ../expect
+	  git rev-parse --verify HEAD >../expect
 	 ) &&
 	 git config submodule.submodule.update merge &&
 	 test_must_fail git submodule update &&
 	 (cd submodule2 &&
-	  git rev-parse --max-count=1 HEAD > ../actual
+	  git rev-parse --verify HEAD >../actual
 	 ) &&
 	 test_cmp expect actual
 	)
@@ -495,12 +755,12 @@ test_expect_success 'submodule update exit immediately after recursive rebase er
 	 ) &&
 	 git checkout HEAD^ &&
 	 (cd submodule2 &&
-	  git rev-parse --max-count=1 HEAD > ../expect
+	  git rev-parse --verify HEAD >../expect
 	 ) &&
 	 git config submodule.submodule.update rebase &&
 	 test_must_fail git submodule update &&
 	 (cd submodule2 &&
-	  git rev-parse --max-count=1 HEAD > ../actual
+	  git rev-parse --verify HEAD >../actual
 	 ) &&
 	 test_cmp expect actual
 	)
@@ -553,14 +813,14 @@ test_expect_success 'submodule add places git-dir in superprojects git-dir recur
 	   git log > ../../../expected
 	  ) &&
 	  git commit -m "added subsubmodule" &&
-	  git push
+	  git push origin :
 	 ) &&
 	 (cd .git/modules/deeper/submodule/modules/subsubmodule &&
 	  git log > ../../../../../actual
 	 ) &&
 	 git add deeper/submodule &&
 	 git commit -m "update submodule" &&
-	 git push &&
+	 git push origin : &&
 	 test_cmp actual expected
 	)
 '
@@ -600,7 +860,8 @@ test_expect_success 'submodule update places git-dir in superprojects git-dir re
 	rm -rf super_update_r2 &&
 	git clone super_update_r super_update_r2 &&
 	(cd super_update_r2 &&
-	 git submodule update --init --recursive &&
+	 git submodule update --init --recursive >actual &&
+	 test_i18ngrep "Submodule path .submodule/subsubmodule.: checked out" actual &&
 	 (cd submodule/subsubmodule &&
 	  git log > ../../expected
 	 ) &&
@@ -615,8 +876,106 @@ test_expect_success 'submodule add properly re-creates deeper level submodules' 
 	(cd super &&
 	 git reset --hard master &&
 	 rm -rf deeper/ &&
-	 git submodule add ../submodule deeper/submodule
+	 git submodule add --force ../submodule deeper/submodule
 	)
+'
+
+test_expect_success 'submodule update properly revives a moved submodule' '
+	(cd super &&
+	 H=$(git rev-parse --short HEAD) &&
+	 git commit -am "pre move" &&
+	 H2=$(git rev-parse --short HEAD) &&
+	 git status | sed "s/$H/XXX/" >expect &&
+	 H=$(cd submodule2; git rev-parse HEAD) &&
+	 git rm --cached submodule2 &&
+	 rm -rf submodule2 &&
+	 mkdir -p "moved/sub module" &&
+	 git update-index --add --cacheinfo 160000 $H "moved/sub module" &&
+	 git config -f .gitmodules submodule.submodule2.path "moved/sub module"
+	 git commit -am "post move" &&
+	 git submodule update &&
+	 git status | sed "s/$H2/XXX/" >actual &&
+	 test_cmp expect actual
+	)
+'
+
+test_expect_success SYMLINKS 'submodule update can handle symbolic links in pwd' '
+	mkdir -p linked/dir &&
+	ln -s linked/dir linkto &&
+	(cd linkto &&
+	 git clone "$TRASH_DIRECTORY"/super_update_r2 super &&
+	 (cd super &&
+	  git submodule update --init --recursive
+	 )
+	)
+'
+
+test_expect_success 'submodule update clone shallow submodule' '
+	test_when_finished "rm -rf super3" &&
+	first=$(git -C cloned submodule status submodule |cut -c2-41) &&
+	second=$(git -C submodule rev-parse HEAD) &&
+	commit_count=$(git -C submodule rev-list --count $first^..$second) &&
+	git clone cloned super3 &&
+	pwd=$(pwd) &&
+	(
+		cd super3 &&
+		sed -e "s#url = ../#url = file://$pwd/#" <.gitmodules >.gitmodules.tmp &&
+		mv -f .gitmodules.tmp .gitmodules &&
+		git submodule update --init --depth=$commit_count &&
+		test 1 = $(git -C submodule log --oneline | wc -l)
+	)
+'
+
+test_expect_success 'submodule update clone shallow submodule outside of depth' '
+	test_when_finished "rm -rf super3" &&
+	git clone cloned super3 &&
+	pwd=$(pwd) &&
+	(
+		cd super3 &&
+		sed -e "s#url = ../#url = file://$pwd/#" <.gitmodules >.gitmodules.tmp &&
+		mv -f .gitmodules.tmp .gitmodules &&
+		test_must_fail git submodule update --init --depth=1 2>actual &&
+		test_i18ngrep "Direct fetching of that commit failed." actual &&
+		git -C ../submodule config uploadpack.allowReachableSHA1InWant true &&
+		git submodule update --init --depth=1 >actual &&
+		test 1 = $(git -C submodule log --oneline | wc -l)
+	)
+'
+
+test_expect_success 'submodule update --recursive drops module name before recursing' '
+	(cd super2 &&
+	 (cd deeper/submodule/subsubmodule &&
+	  git checkout HEAD^
+	 ) &&
+	 git submodule update --recursive deeper/submodule >actual &&
+	 test_i18ngrep "Submodule path .deeper/submodule/subsubmodule.: checked out" actual
+	)
+'
+
+test_expect_success 'submodule update can be run in parallel' '
+	(cd super2 &&
+	 GIT_TRACE=$(pwd)/trace.out git submodule update --jobs 7 &&
+	 grep "7 tasks" trace.out &&
+	 git config submodule.fetchJobs 8 &&
+	 GIT_TRACE=$(pwd)/trace.out git submodule update &&
+	 grep "8 tasks" trace.out &&
+	 GIT_TRACE=$(pwd)/trace.out git submodule update --jobs 9 &&
+	 grep "9 tasks" trace.out
+	)
+'
+
+test_expect_success 'git clone passes the parallel jobs config on to submodules' '
+	test_when_finished "rm -rf super4" &&
+	GIT_TRACE=$(pwd)/trace.out git clone --recurse-submodules --jobs 7 . super4 &&
+	grep "7 tasks" trace.out &&
+	rm -rf super4 &&
+	git config --global submodule.fetchJobs 8 &&
+	GIT_TRACE=$(pwd)/trace.out git clone --recurse-submodules . super4 &&
+	grep "8 tasks" trace.out &&
+	rm -rf super4 &&
+	GIT_TRACE=$(pwd)/trace.out git clone --recurse-submodules --jobs 9 . super4 &&
+	grep "9 tasks" trace.out &&
+	rm -rf super4
 '
 
 test_done

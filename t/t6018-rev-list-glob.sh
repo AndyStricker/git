@@ -129,6 +129,18 @@ test_expect_success 'rev-parse --remotes=foo' '
 
 '
 
+test_expect_success 'rev-parse --exclude with --branches' '
+	compare rev-parse "--exclude=*/* --branches" "master someref subspace-x"
+'
+
+test_expect_success 'rev-parse --exclude with --all' '
+	compare rev-parse "--exclude=refs/remotes/* --all" "--branches --tags"
+'
+
+test_expect_success 'rev-parse accumulates multiple --exclude' '
+	compare rev-parse "--exclude=refs/remotes/* --exclude=refs/tags/* --all" --branches
+'
+
 test_expect_success 'rev-list --glob=refs/heads/subspace/*' '
 
 	compare rev-list "subspace/one subspace/two" "--glob=refs/heads/subspace/*"
@@ -229,6 +241,46 @@ test_expect_success 'rev-list --remotes=foo' '
 
 	compare rev-list "foo/baz" "--remotes=foo"
 
+'
+
+test_expect_success 'rev-list --exclude with --branches' '
+	compare rev-list "--exclude=*/* --branches" "master someref subspace-x"
+'
+
+test_expect_success 'rev-list --exclude with --all' '
+	compare rev-list "--exclude=refs/remotes/* --all" "--branches --tags"
+'
+
+test_expect_success 'rev-list accumulates multiple --exclude' '
+	compare rev-list "--exclude=refs/remotes/* --exclude=refs/tags/* --all" --branches
+'
+
+test_expect_failure 'rev-list should succeed with empty output on empty stdin' '
+	>expect &&
+	git rev-list --stdin <expect >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'rev-list should succeed with empty output with all refs excluded' '
+	>expect &&
+	git rev-list --exclude=* --all >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'rev-list should succeed with empty output with empty --all' '
+	(
+		test_create_repo empty &&
+		cd empty &&
+		>expect &&
+		git rev-list --all >actual &&
+		test_cmp expect actual
+	)
+'
+
+test_expect_success 'rev-list should succeed with empty output with empty glob' '
+	>expect &&
+	git rev-list --glob=does-not-match-anything >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'shortlog accepts --glob/--tags/--remotes' '

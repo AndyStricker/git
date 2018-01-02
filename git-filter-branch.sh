@@ -46,6 +46,8 @@ git_commit_non_empty_tree()
 {
 	if test $# = 3 && test "$1" = $(git rev-parse "$3^{tree}"); then
 		map "$3"
+	elif test $# = 1 && test "$1" = 4b825dc642cb6eb9a060e54bf8d69288fbee4904; then
+		:
 	else
 		git commit-tree "$@"
 	fi
@@ -64,45 +66,28 @@ EOF
 
 eval "$functions"
 
-# When piped a commit, output a script to set the ident of either
-# "author" or "committer
-
-set_ident () {
-	lid="$(echo "$1" | tr "[A-Z]" "[a-z]")"
-	uid="$(echo "$1" | tr "[a-z]" "[A-Z]")"
-	pick_id_script='
-		/^'$lid' /{
-			s/'\''/'\''\\'\'\''/g
-			h
-			s/^'$lid' \([^<]*\) <[^>]*> .*$/\1/
-			s/'\''/'\''\'\'\''/g
-			s/.*/GIT_'$uid'_NAME='\''&'\''; export GIT_'$uid'_NAME/p
-
-			g
-			s/^'$lid' [^<]* <\([^>]*\)> .*$/\1/
-			s/'\''/'\''\'\'\''/g
-			s/.*/GIT_'$uid'_EMAIL='\''&'\''; export GIT_'$uid'_EMAIL/p
-
-			g
-			s/^'$lid' [^<]* <[^>]*> \(.*\)$/\1/
-			s/'\''/'\''\'\'\''/g
-			s/.*/GIT_'$uid'_DATE='\''&'\''; export GIT_'$uid'_DATE/p
-
-			q
-		}
-	'
-
-	LANG=C LC_ALL=C sed -ne "$pick_id_script"
+finish_ident() {
 	# Ensure non-empty id name.
-	echo "case \"\$GIT_${uid}_NAME\" in \"\") GIT_${uid}_NAME=\"\${GIT_${uid}_EMAIL%%@*}\" && export GIT_${uid}_NAME;; esac"
+	echo "case \"\$GIT_$1_NAME\" in \"\") GIT_$1_NAME=\"\${GIT_$1_EMAIL%%@*}\" && export GIT_$1_NAME;; esac"
+	# And make sure everything is exported.
+	echo "export GIT_$1_NAME"
+	echo "export GIT_$1_EMAIL"
+	echo "export GIT_$1_DATE"
 }
 
-USAGE="[--env-filter <command>] [--tree-filter <command>]
-	[--index-filter <command>] [--parent-filter <command>]
-	[--msg-filter <command>] [--commit-filter <command>]
-	[--tag-name-filter <command>] [--subdirectory-filter <directory>]
-	[--original <namespace>] [-d <directory>] [-f | --force]
-	[<rev-list options>...]"
+set_ident () {
+	parse_ident_from_commit author AUTHOR committer COMMITTER
+	finish_ident AUTHOR
+	finish_ident COMMITTER
+}
+
+USAGE="[--setup <command>] [--subdirectory-filter <directory>] [--env-filter <command>]
+	[--tree-filter <command>] [--index-filter <command>]
+	[--parent-filter <command>] [--msg-filter <command>]
+	[--commit-filter <command>] [--tag-name-filter <command>]
+	[--original <namespace>]
+	[-d <directory>] [-f | --force] [--state-branch <branch>]
+	[--] [<rev-list options>...]"
 
 OPTIONS_SPEC=
 . git-sh-setup
@@ -112,6 +97,7 @@ if [ "$(is_bare_repository)" = false ]; then
 fi
 
 tempdir=.git-rewrite
+filter_setup=
 filter_env=
 filter_tree=
 filter_index=
@@ -120,6 +106,7 @@ filter_msg=cat
 filter_commit=
 filter_tag_name=
 filter_subdir=
+state_branch=
 orig_namespace=refs/original/
 force=
 prune_empty=
@@ -164,6 +151,13 @@ do
 	-d)
 		tempdir="$OPTARG"
 		;;
+	--setup)
+		filter_setup="$OPTARG"
+		;;
+	--subdirectory-filter)
+		filter_subdir="$OPTARG"
+		remap_to_ancestor=t
+		;;
 	--env-filter)
 		filter_env="$OPTARG"
 		;;
@@ -185,12 +179,11 @@ do
 	--tag-name-filter)
 		filter_tag_name="$OPTARG"
 		;;
-	--subdirectory-filter)
-		filter_subdir="$OPTARG"
-		remap_to_ancestor=t
-		;;
 	--original)
 		orig_namespace=$(expr "$OPTARG/" : '\(.*[^/]\)/*$')/
+		;;
+	--state-branch)
+		state_branch="$OPTARG"
 		;;
 	*)
 		usage
@@ -217,6 +210,7 @@ t)
 	test -d "$tempdir" &&
 		die "$tempdir already exists, please remove it"
 esac
+orig_dir=$(pwd)
 mkdir -p "$tempdir/t" &&
 tempdir="$(cd "$tempdir"; pwd)" &&
 cd "$tempdir/t" &&
@@ -224,11 +218,18 @@ workdir="$(pwd)" ||
 die ""
 
 # Remove tempdir on exit
-trap 'cd ../..; rm -rf "$tempdir"' 0
+trap 'cd "$orig_dir"; rm -rf "$tempdir"' 0
 
 ORIG_GIT_DIR="$GIT_DIR"
 ORIG_GIT_WORK_TREE="$GIT_WORK_TREE"
 ORIG_GIT_INDEX_FILE="$GIT_INDEX_FILE"
+ORIG_GIT_AUTHOR_NAME="$GIT_AUTHOR_NAME"
+ORIG_GIT_AUTHOR_EMAIL="$GIT_AUTHOR_EMAIL"
+ORIG_GIT_AUTHOR_DATE="$GIT_AUTHOR_DATE"
+ORIG_GIT_COMMITTER_NAME="$GIT_COMMITTER_NAME"
+ORIG_GIT_COMMITTER_EMAIL="$GIT_COMMITTER_EMAIL"
+ORIG_GIT_COMMITTER_DATE="$GIT_COMMITTER_DATE"
+
 GIT_WORK_TREE=.
 export GIT_DIR GIT_WORK_TREE
 
@@ -254,13 +255,33 @@ git rev-parse --no-flags --revs-only --symbolic-full-name \
 sed -e '/^^/d' "$tempdir"/raw-heads >"$tempdir"/heads
 
 test -s "$tempdir"/heads ||
-	die "Which ref do you want to rewrite?"
+	die "You must specify a ref to rewrite."
 
 GIT_INDEX_FILE="$(pwd)/../index"
 export GIT_INDEX_FILE
 
 # map old->new commit ids for rewriting parents
 mkdir ../map || die "Could not create map/ directory"
+
+if test -n "$state_branch"
+then
+	state_commit=$(git rev-parse --no-flags --revs-only "$state_branch")
+	if test -n "$state_commit"
+	then
+		echo "Populating map from $state_branch ($state_commit)" 1>&2
+		perl -e'open(MAP, "-|", "git show $ARGV[0]:filter.map") or die;
+			while (<MAP>) {
+				m/(.*):(.*)/ or die;
+				open F, ">../map/$1" or die;
+				print F "$2" or die;
+				close(F) or die;
+			}
+			close(MAP) or die;' "$state_commit" \
+				|| die "Unable to load state from $state_branch:filter.map"
+	else
+		echo "Branch $state_branch does not exist. Will create" 1>&2
+	fi
+fi
 
 # we need "--" only if there are no path arguments in $@
 nonrevs=$(git rev-parse --no-revs "$@") || exit
@@ -272,7 +293,7 @@ else
 	remap_to_ancestor=t
 fi
 
-rev_args=$(git rev-parse --revs-only "$@")
+git rev-parse --revs-only "$@" >../parse
 
 case "$filter_subdir" in
 "")
@@ -285,26 +306,72 @@ case "$filter_subdir" in
 esac
 
 git rev-list --reverse --topo-order --default HEAD \
-	--parents --simplify-merges $rev_args "$@" > ../revs ||
+	--parents --simplify-merges --stdin "$@" <../parse >../revs ||
 	die "Could not get the commits"
 commits=$(wc -l <../revs | tr -d " ")
 
 test $commits -eq 0 && die "Found nothing to rewrite"
 
 # Rewrite the commits
+report_progress ()
+{
+	if test -n "$progress" &&
+		test $git_filter_branch__commit_count -gt $next_sample_at
+	then
+		count=$git_filter_branch__commit_count
+
+		now=$(date +%s)
+		elapsed=$(($now - $start_timestamp))
+		remaining=$(( ($commits - $count) * $elapsed / $count ))
+		if test $elapsed -gt 0
+		then
+			next_sample_at=$(( ($elapsed + 1) * $count / $elapsed ))
+		else
+			next_sample_at=$(($next_sample_at + 1))
+		fi
+		progress=" ($elapsed seconds passed, remaining $remaining predicted)"
+	fi
+	printf "\rRewrite $commit ($count/$commits)$progress    "
+}
 
 git_filter_branch__commit_count=0
+
+progress= start_timestamp=
+if date '+%s' 2>/dev/null | grep -q '^[0-9][0-9]*$'
+then
+	next_sample_at=0
+	progress="dummy to ensure this is not empty"
+	start_timestamp=$(date '+%s')
+fi
+
+if test -n "$filter_index" ||
+   test -n "$filter_tree" ||
+   test -n "$filter_subdir"
+then
+	need_index=t
+else
+	need_index=
+fi
+
+eval "$filter_setup" < /dev/null ||
+	die "filter setup failed: $filter_setup"
+
 while read commit parents; do
 	git_filter_branch__commit_count=$(($git_filter_branch__commit_count+1))
-	printf "\rRewrite $commit ($git_filter_branch__commit_count/$commits)"
+
+	report_progress
 
 	case "$filter_subdir" in
 	"")
-		git read-tree -i -m $commit
+		if test -n "$need_index"
+		then
+			GIT_ALLOW_NULL_SHA1=1 git read-tree -i -m $commit
+		fi
 		;;
 	*)
 		# The commit may not have the subdirectory at all
-		err=$(git read-tree -i -m $commit:"$filter_subdir" 2>&1) || {
+		err=$(GIT_ALLOW_NULL_SHA1=1 \
+		      git read-tree -i -m $commit:"$filter_subdir" 2>&1) || {
 			if ! git rev-parse -q --verify $commit:"$filter_subdir"
 			then
 				rm -f "$GIT_INDEX_FILE"
@@ -320,10 +387,8 @@ while read commit parents; do
 	git cat-file commit "$commit" >../commit ||
 		die "Cannot read commit $commit"
 
-	eval "$(set_ident AUTHOR <../commit)" ||
-		die "setting author failed for commit $commit"
-	eval "$(set_ident COMMITTER <../commit)" ||
-		die "setting committer failed for commit $commit"
+	eval "$(set_ident <../commit)" ||
+		die "setting author/committer failed for commit $commit"
 	eval "$filter_env" < /dev/null ||
 		die "env filter failed: $filter_env"
 
@@ -337,7 +402,7 @@ while read commit parents; do
 			die "tree filter failed: $filter_tree"
 
 		(
-			git diff-index -r --name-only --ignore-submodules $commit &&
+			git diff-index -r --name-only --ignore-submodules $commit -- &&
 			git ls-files --others
 		) > "$tempdir"/tree-state || exit
 		git update-index --add --replace --remove --stdin \
@@ -350,7 +415,13 @@ while read commit parents; do
 	parentstr=
 	for parent in $parents; do
 		for reparent in $(map "$parent"); do
-			parentstr="$parentstr -p $reparent"
+			case "$parentstr " in
+			*" -p $reparent "*)
+				;;
+			*)
+				parentstr="$parentstr -p $reparent"
+				;;
+			esac
 		done
 	done
 	if [ "$filter_parent" ]; then
@@ -358,11 +429,26 @@ while read commit parents; do
 				die "parent filter failed: $filter_parent"
 	fi
 
-	sed -e '1,/^$/d' <../commit | \
+	{
+		while IFS='' read -r header_line && test -n "$header_line"
+		do
+			# skip header lines...
+			:;
+		done
+		# and output the actual commit message
+		cat
+	} <../commit |
 		eval "$filter_msg" > ../message ||
 			die "msg filter failed: $filter_msg"
+
+	if test -n "$need_index"
+	then
+		tree=$(git write-tree)
+	else
+		tree=$(git rev-parse "$commit^{tree}")
+	fi
 	workdir=$workdir @SHELL_PATH@ -c "$filter_commit" "git commit-tree" \
-		$(git write-tree) $parentstr < ../message > ../map/$commit ||
+		"$tree" $parentstr < ../message > ../map/$commit ||
 			die "could not write rewritten commit"
 done <../revs
 
@@ -475,7 +561,7 @@ if [ "$filter_tag_name" ]; then
 					}' \
 				    -e '/^-----BEGIN PGP SIGNATURE-----/q' \
 				    -e 'p' ) |
-				git mktag) ||
+				git hash-object -t tag -w --stdin) ||
 				die "Could not create new tag object for $ref"
 			if git cat-file tag "$ref" | \
 			   sane_grep '^-----BEGIN PGP SIGNATURE-----' >/dev/null 2>&1
@@ -489,12 +575,9 @@ if [ "$filter_tag_name" ]; then
 	done
 fi
 
-cd ../..
-rm -rf "$tempdir"
-
-trap - 0
-
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE
+unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
 test -z "$ORIG_GIT_DIR" || {
 	GIT_DIR="$ORIG_GIT_DIR" && export GIT_DIR
 }
@@ -506,6 +589,58 @@ test -z "$ORIG_GIT_INDEX_FILE" || {
 	GIT_INDEX_FILE="$ORIG_GIT_INDEX_FILE" &&
 	export GIT_INDEX_FILE
 }
+test -z "$ORIG_GIT_AUTHOR_NAME" || {
+	GIT_AUTHOR_NAME="$ORIG_GIT_AUTHOR_NAME" &&
+	export GIT_AUTHOR_NAME
+}
+test -z "$ORIG_GIT_AUTHOR_EMAIL" || {
+	GIT_AUTHOR_EMAIL="$ORIG_GIT_AUTHOR_EMAIL" &&
+	export GIT_AUTHOR_EMAIL
+}
+test -z "$ORIG_GIT_AUTHOR_DATE" || {
+	GIT_AUTHOR_DATE="$ORIG_GIT_AUTHOR_DATE" &&
+	export GIT_AUTHOR_DATE
+}
+test -z "$ORIG_GIT_COMMITTER_NAME" || {
+	GIT_COMMITTER_NAME="$ORIG_GIT_COMMITTER_NAME" &&
+	export GIT_COMMITTER_NAME
+}
+test -z "$ORIG_GIT_COMMITTER_EMAIL" || {
+	GIT_COMMITTER_EMAIL="$ORIG_GIT_COMMITTER_EMAIL" &&
+	export GIT_COMMITTER_EMAIL
+}
+test -z "$ORIG_GIT_COMMITTER_DATE" || {
+	GIT_COMMITTER_DATE="$ORIG_GIT_COMMITTER_DATE" &&
+	export GIT_COMMITTER_DATE
+}
+
+if test -n "$state_branch"
+then
+	echo "Saving rewrite state to $state_branch" 1>&2
+	state_blob=$(
+		perl -e'opendir D, "../map" or die;
+			open H, "|-", "git hash-object -w --stdin" or die;
+			foreach (sort readdir(D)) {
+				next if m/^\.\.?$/;
+				open F, "<../map/$_" or die;
+				chomp($f = <F>);
+				print H "$_:$f\n" or die;
+			}
+			close(H) or die;' || die "Unable to save state")
+	state_tree=$(/bin/echo -e "100644 blob $state_blob\tfilter.map" | git mktree)
+	if test -n "$state_commit"
+	then
+		state_commit=$(/bin/echo "Sync" | git commit-tree "$state_tree" -p "$state_commit")
+	else
+		state_commit=$(/bin/echo "Sync" | git commit-tree "$state_tree" )
+	fi
+	git update-ref "$state_branch" "$state_commit"
+fi
+
+cd "$orig_dir"
+rm -rf "$tempdir"
+
+trap - 0
 
 if [ "$(is_bare_repository)" = false ]; then
 	git read-tree -u -m HEAD || exit

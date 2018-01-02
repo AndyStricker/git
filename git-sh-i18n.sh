@@ -1,9 +1,8 @@
-#!/bin/sh
+# This shell library is Git's interface to gettext.sh. See po/README
+# for usage instructions.
 #
 # Copyright (c) 2010 Ævar Arnfjörð Bjarmason
 #
-# This is Git's interface to gettext.sh. See po/README for usage
-# instructions.
 
 # Export the TEXTDOMAIN* data that we need for Git
 TEXTDOMAIN=git
@@ -21,7 +20,7 @@ GIT_INTERNAL_GETTEXT_SH_SCHEME=fallthrough
 if test -n "@@USE_GETTEXT_SCHEME@@"
 then
 	GIT_INTERNAL_GETTEXT_SH_SCHEME="@@USE_GETTEXT_SCHEME@@"
-elif test -n "@@USE_FALLTHROUGH_GETTEXT_SCHEME@@$GIT_INTERNAL_GETTEXT_TEST_FALLBACKS"
+elif test -n "$GIT_INTERNAL_GETTEXT_TEST_FALLBACKS"
 then
 	: no probing necessary
 elif test -n "$GIT_GETTEXT_POISON"
@@ -54,6 +53,13 @@ gettext_without_eval_gettext)
 			git sh-i18n--envsubst "$1"
 		)
 	}
+
+	eval_ngettext () {
+		ngettext "$1" "$2" "$3" | (
+			export PATH $(git sh-i18n--envsubst --variables "$2");
+			git sh-i18n--envsubst "$2"
+		)
+	}
 	;;
 poison)
 	# Emit garbage so that tests that incorrectly rely on translatable
@@ -63,6 +69,10 @@ poison)
 	}
 
 	eval_gettext () {
+		printf "%s" "# GETTEXT POISON #"
+	}
+
+	eval_ngettext () {
 		printf "%s" "# GETTEXT POISON #"
 	}
 	;;
@@ -75,6 +85,13 @@ poison)
 		printf "%s" "$1" | (
 			export PATH $(git sh-i18n--envsubst --variables "$1");
 			git sh-i18n--envsubst "$1"
+		)
+	}
+
+	eval_ngettext () {
+		(test "$3" = 1 && printf "%s" "$1" || printf "%s" "$2") | (
+			export PATH $(git sh-i18n--envsubst --variables "$2");
+			git sh-i18n--envsubst "$2"
 		)
 	}
 	;;

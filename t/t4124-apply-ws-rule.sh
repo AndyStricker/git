@@ -47,7 +47,7 @@ test_fix () {
 	# find touched lines
 	$DIFF file target | sed -n -e "s/^> //p" >fixed
 
-	# the changed lines are all expeced to change
+	# the changed lines are all expected to change
 	fixed_cnt=$(wc -l <fixed)
 	case "$1" in
 	'') expect_cnt=$fixed_cnt ;;
@@ -99,9 +99,8 @@ test_expect_success 'whitespace=warn, default rule' '
 
 test_expect_success 'whitespace=error-all, default rule' '
 
-	apply_patch --whitespace=error-all && return 1
-	test -s target && return 1
-	: happy
+	test_must_fail apply_patch --whitespace=error-all &&
+	! test -s target
 
 '
 
@@ -468,22 +467,80 @@ test_expect_success 'same, but with CR-LF line endings && cr-at-eol set' '
 	test_cmp one expect
 '
 
-test_expect_success 'same, but with CR-LF line endings && cr-at-eol unset' '
+test_expect_success 'CR-LF line endings && add line && text=auto' '
 	git config --unset core.whitespace &&
 	printf "a\r\n" >one &&
-	printf "b\r\n" >>one &&
-	printf "c\r\n" >>one &&
 	cp one save-one &&
-	printf "                 \r\n" >>one &&
 	git add one &&
+	printf "b\r\n" >>one &&
 	cp one expect &&
-	printf "d\r\n" >>one &&
 	git diff -- one >patch &&
 	mv save-one one &&
-	echo d >>expect &&
-
-	git apply --ignore-space-change --whitespace=fix patch &&
+	echo "one text=auto" >.gitattributes &&
+	git apply patch &&
 	test_cmp one expect
+'
+
+test_expect_success 'CR-LF line endings && change line && text=auto' '
+	printf "a\r\n" >one &&
+	cp one save-one &&
+	git add one &&
+	printf "b\r\n" >one &&
+	cp one expect &&
+	git diff -- one >patch &&
+	mv save-one one &&
+	echo "one text=auto" >.gitattributes &&
+	git apply patch &&
+	test_cmp one expect
+'
+
+test_expect_success 'LF in repo, CRLF in worktree && change line && text=auto' '
+	printf "a\n" >one &&
+	git add one &&
+	printf "b\r\n" >one &&
+	git diff -- one >patch &&
+	printf "a\r\n" >one &&
+	echo "one text=auto" >.gitattributes &&
+	git -c core.eol=CRLF apply patch &&
+	printf "b\r\n" >expect &&
+	test_cmp one expect
+'
+
+test_expect_success 'whitespace=fix to expand' '
+	qz_to_tab_space >preimage <<-\EOF &&
+	QQa
+	QQb
+	QQc
+	ZZZZZZZZZZZZZZZZd
+	QQe
+	QQf
+	QQg
+	EOF
+	qz_to_tab_space >patch <<-\EOF &&
+	diff --git a/preimage b/preimage
+	--- a/preimage
+	+++ b/preimage
+	@@ -1,7 +1,6 @@
+	 QQa
+	 QQb
+	 QQc
+	-QQd
+	 QQe
+	 QQf
+	 QQg
+	EOF
+	git -c core.whitespace=tab-in-indent apply --whitespace=fix patch
+'
+
+test_expect_success 'whitespace check skipped for excluded paths' '
+	git config core.whitespace blank-at-eol &&
+	>used &&
+	>unused &&
+	git add used unused &&
+	echo "used" >used &&
+	echo "unused " >unused &&
+	git diff-files -p used unused >patch &&
+	git apply --include=used --stat --whitespace=error <patch
 '
 
 test_done

@@ -1,4 +1,6 @@
-#!/bin/sh
+# Performance testing framework.  Each perf script starts much like
+# a normal test script, except it sources this library instead of
+# test-lib.sh.  See t/perf/README for documentation.
 #
 # Copyright (c) 2011 Thomas Rast
 #
@@ -42,16 +44,22 @@ else
 fi
 
 TEST_NO_CREATE_REPO=t
+TEST_NO_MALLOC_CHECK=t
 
 . ../test-lib.sh
 
+# Variables from test-lib that are normally internal to the tests; we
+# need to export them for test_perf subshells
+export TEST_DIRECTORY TRASH_DIRECTORY GIT_BUILD_DIR GIT_TEST_CMP
+
+MODERN_GIT=$GIT_BUILD_DIR/bin-wrappers/git
+export MODERN_GIT
+
 perf_results_dir=$TEST_OUTPUT_DIRECTORY/test-results
+test -n "$GIT_PERF_SUBSECTION" && perf_results_dir="$perf_results_dir/$GIT_PERF_SUBSECTION"
 mkdir -p "$perf_results_dir"
 rm -f "$perf_results_dir"/$(basename "$0" .sh).subtests
 
-if test -z "$GIT_PERF_REPEAT_COUNT"; then
-	GIT_PERF_REPEAT_COUNT=3
-fi
 die_if_build_dir_not_repo () {
 	if ! ( cd "$TEST_DIRECTORY/.." &&
 		    git rev-parse --build-dir >/dev/null 2>&1 ); then
@@ -68,33 +76,57 @@ if test -z "$GIT_PERF_LARGE_REPO"; then
 	GIT_PERF_LARGE_REPO=$TEST_DIRECTORY/..
 fi
 
+test_perf_do_repo_symlink_config_ () {
+	test_have_prereq SYMLINKS || git config core.symlinks false
+}
+
 test_perf_create_repo_from () {
 	test "$#" = 2 ||
 	error "bug in the test script: not 2 parameters to test-create-repo"
 	repo="$1"
 	source="$2"
-	source_git=$source/$(cd "$source" && git rev-parse --git-dir)
+	source_git="$("$MODERN_GIT" -C "$source" rev-parse --git-dir)"
+	objects_dir="$("$MODERN_GIT" -C "$source" rev-parse --git-path objects)"
 	mkdir -p "$repo/.git"
 	(
-		cd "$repo/.git" &&
-		{ cp -Rl "$source_git/objects" . 2>/dev/null ||
-			cp -R "$source_git/objects" .; } &&
+		cd "$source" &&
+		{ cp -Rl "$objects_dir" "$repo/.git/" 2>/dev/null ||
+			cp -R "$objects_dir" "$repo/.git/"; } &&
 		for stuff in "$source_git"/*; do
 			case "$stuff" in
-				*/objects|*/hooks|*/config)
+				*/objects|*/hooks|*/config|*/commondir)
 					;;
 				*)
-					cp -R "$stuff" . || break
+					cp -R "$stuff" "$repo/.git/" || exit 1
 					;;
 			esac
-		done &&
-		cd .. &&
-		git init -q &&
-		mv .git/hooks .git/hooks-disabled 2>/dev/null
+		done
+	) &&
+	(
+		cd "$repo" &&
+		"$MODERN_GIT" init -q &&
+		test_perf_do_repo_symlink_config_ &&
+		mv .git/hooks .git/hooks-disabled 2>/dev/null &&
+		if test -f .git/index.lock
+		then
+			# We may be copying a repo that can't run "git
+			# status" due to a locked index. Since we have
+			# a copy it's fine to remove the lock.
+			rm .git/index.lock
+		fi
 	) || error "failed to copy repository '$source' to '$repo'"
 }
 
 # call at least one of these to establish an appropriately-sized repository
+test_perf_fresh_repo () {
+	repo="${1:-$TRASH_DIRECTORY}"
+	"$MODERN_GIT" init -q "$repo" &&
+	(
+		cd "$repo" &&
+		test_perf_do_repo_symlink_config_
+	)
+}
+
 test_perf_default_repo () {
 	test_perf_create_repo_from "${1:-$TRASH_DIRECTORY}" "$GIT_PERF_REPO"
 }
@@ -114,12 +146,16 @@ test_checkout_worktree () {
 # Performance tests should never fail.  If they do, stop immediately
 immediate=t
 
+# Perf tests require GNU time
+case "$(uname -s)" in Darwin) GTIME="${GTIME:-gtime}";; esac
+GTIME="${GTIME:-/usr/bin/time}"
+
 test_run_perf_ () {
 	test_cleanup=:
 	test_export_="test_cleanup"
 	export test_cleanup test_export_
-	/usr/bin/time -f "%E %U %S" -o test_time.$i "$SHELL" -c '
-. '"$TEST_DIRECTORY"/../test-lib-functions.sh'
+	"$GTIME" -f "%E %U %S" -o test_time.$i "$SHELL" -c '
+. '"$TEST_DIRECTORY"/test-lib-functions.sh'
 test_export () {
 	[ $# != 0 ] || return 0
 	test_export_="$test_export_\\|$1"
@@ -145,6 +181,7 @@ exit $ret' >&3 2>&4
 
 
 test_perf () {
+	test_start_
 	test "$#" = 3 && { test_prereq=$1; shift; } || test_prereq=
 	test "$#" = 2 ||
 	error "bug in the test script: not 2 or 3 parameters to test-expect-success"
@@ -155,16 +192,16 @@ test_perf () {
 		echo "$test_count" >>"$perf_results_dir"/$base.subtests
 		echo "$1" >"$perf_results_dir"/$base.$test_count.descr
 		if test -z "$verbose"; then
-			echo -n "perf $test_count - $1:"
+			printf "%s" "perf $test_count - $1:"
 		else
 			echo "perf $test_count - $1:"
 		fi
-		for i in $(seq 1 $GIT_PERF_REPEAT_COUNT); do
+		for i in $(test_seq 1 $GIT_PERF_REPEAT_COUNT); do
 			say >&3 "running: $2"
 			if test_run_perf_ "$2"
 			then
 				if test -z "$verbose"; then
-					echo -n " $i"
+					printf " %s" "$i"
 				else
 					echo "* timing run $i/$GIT_PERF_REPEAT_COUNT:"
 				fi
@@ -182,7 +219,7 @@ test_perf () {
 		base="$perf_results_dir"/"$perf_results_prefix$(basename "$0" .sh)"."$test_count"
 		"$TEST_DIRECTORY"/perf/min_time.perl test_time.* >"$base".times
 	fi
-	echo >&3 ""
+	test_finish_
 }
 
 # We extend test_done to print timings at the end (./run disables this

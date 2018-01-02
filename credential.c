@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "config.h"
 #include "credential.h"
 #include "string-list.h"
 #include "run-command.h"
@@ -40,8 +41,7 @@ static int credential_config_callback(const char *var, const char *value,
 	struct credential *c = data;
 	const char *key, *dot;
 
-	key = skip_prefix(var, "credential.");
-	if (!key)
+	if (!skip_prefix(var, "credential.", &key))
 		return 0;
 
 	if (!value)
@@ -64,9 +64,12 @@ static int credential_config_callback(const char *var, const char *value,
 		key = dot + 1;
 	}
 
-	if (!strcmp(key, "helper"))
-		string_list_append(&c->helpers, value);
-	else if (!strcmp(key, "username")) {
+	if (!strcmp(key, "helper")) {
+		if (*value)
+			string_list_append(&c->helpers, value);
+		else
+			string_list_clear(&c->helpers, 0);
+	} else if (!strcmp(key, "username")) {
 		if (!c->username)
 			c->username = xstrdup(value);
 	}
@@ -91,8 +94,7 @@ static void credential_apply_config(struct credential *c)
 	c->configured = 1;
 
 	if (!c->use_http_path && proto_is_http(c->protocol)) {
-		free(c->path);
-		c->path = NULL;
+		FREE_AND_NULL(c->path);
 	}
 }
 
@@ -143,7 +145,7 @@ int credential_read(struct credential *c, FILE *fp)
 {
 	struct strbuf line = STRBUF_INIT;
 
-	while (strbuf_getline(&line, fp, '\n') != EOF) {
+	while (strbuf_getline_lf(&line, fp) != EOF) {
 		char *key = line.buf;
 		char *value = strchr(key, '=');
 
@@ -172,6 +174,10 @@ int credential_read(struct credential *c, FILE *fp)
 		} else if (!strcmp(key, "path")) {
 			free(c->path);
 			c->path = xstrdup(value);
+		} else if (!strcmp(key, "url")) {
+			credential_from_url(c, value);
+		} else if (!strcmp(key, "quit")) {
+			c->quit = !!git_config_bool("quit", value);
 		}
 		/*
 		 * Ignore other lines; we don't know what they mean, but
@@ -191,7 +197,7 @@ static void credential_write_item(FILE *fp, const char *key, const char *value)
 	fprintf(fp, "%s=%s\n", key, value);
 }
 
-static void credential_write(const struct credential *c, FILE *fp)
+void credential_write(const struct credential *c, FILE *fp)
 {
 	credential_write_item(fp, "protocol", c->protocol);
 	credential_write_item(fp, "host", c->host);
@@ -204,11 +210,10 @@ static int run_credential_helper(struct credential *c,
 				 const char *cmd,
 				 int want_output)
 {
-	struct child_process helper;
+	struct child_process helper = CHILD_PROCESS_INIT;
 	const char *argv[] = { NULL, NULL };
 	FILE *fp;
 
-	memset(&helper, 0, sizeof(helper));
 	argv[0] = cmd;
 	helper.argv = argv;
 	helper.use_shell = 1;
@@ -274,6 +279,9 @@ void credential_fill(struct credential *c)
 		credential_do(c, c->helpers.items[i].string, "get");
 		if (c->username && c->password)
 			return;
+		if (c->quit)
+			die("credential helper '%s' told us to quit",
+			    c->helpers.items[i].string);
 	}
 
 	credential_getpass(c);
@@ -306,10 +314,8 @@ void credential_reject(struct credential *c)
 	for (i = 0; i < c->helpers.nr; i++)
 		credential_do(c, c->helpers.items[i].string, "erase");
 
-	free(c->username);
-	c->username = NULL;
-	free(c->password);
-	c->password = NULL;
+	FREE_AND_NULL(c->username);
+	FREE_AND_NULL(c->password);
 	c->approved = 0;
 }
 

@@ -159,6 +159,7 @@ void git_deflate_init(git_zstream *strm, int level)
 {
 	int status;
 
+	memset(strm, 0, sizeof(*strm));
 	zlib_pre_call(strm);
 	status = deflateInit(&strm->z, level);
 	zlib_post_call(strm);
@@ -168,15 +169,11 @@ void git_deflate_init(git_zstream *strm, int level)
 	    strm->z.msg ? strm->z.msg : "no message");
 }
 
-void git_deflate_init_gzip(git_zstream *strm, int level)
+static void do_git_deflate_init(git_zstream *strm, int level, int windowBits)
 {
-	/*
-	 * Use default 15 bits, +16 is to generate gzip header/trailer
-	 * instead of the zlib wrapper.
-	 */
-	const int windowBits = 15 + 16;
 	int status;
 
+	memset(strm, 0, sizeof(*strm));
 	zlib_pre_call(strm);
 	status = deflateInit2(&strm->z, level,
 				  Z_DEFLATED, windowBits,
@@ -186,6 +183,24 @@ void git_deflate_init_gzip(git_zstream *strm, int level)
 		return;
 	die("deflateInit2: %s (%s)", zerr_to_string(status),
 	    strm->z.msg ? strm->z.msg : "no message");
+}
+
+void git_deflate_init_gzip(git_zstream *strm, int level)
+{
+	/*
+	 * Use default 15 bits, +16 is to generate gzip header/trailer
+	 * instead of the zlib wrapper.
+	 */
+	do_git_deflate_init(strm, level, 15 + 16);
+}
+
+void git_deflate_init_raw(git_zstream *strm, int level)
+{
+	/*
+	 * Use default 15 bits, negate the value to get raw compressed
+	 * data without zlib header and trailer.
+	 */
+	do_git_deflate_init(strm, level, -15);
 }
 
 int git_deflate_abort(git_zstream *strm)

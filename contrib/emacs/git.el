@@ -15,9 +15,8 @@
 ;; PURPOSE.  See the GNU General Public License for more details.
 ;;
 ;; You should have received a copy of the GNU General Public
-;; License along with this program; if not, write to the Free
-;; Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,
-;; MA 02111-1307 USA
+;; License along with this program; if not, see
+;; <http://www.gnu.org/licenses/>.
 
 ;;; Commentary:
 
@@ -1671,7 +1670,7 @@ Commands:
   "Entry point into git-status mode."
   (interactive "DSelect directory: ")
   (setq dir (git-get-top-dir dir))
-  (if (file-directory-p (concat (file-name-as-directory dir) ".git"))
+  (if (file-exists-p (concat (file-name-as-directory dir) ".git"))
       (let ((buffer (or (and git-reuse-status-buffer (git-find-status-buffer dir))
                         (create-file-buffer (expand-file-name "*git-status*" dir)))))
         (switch-to-buffer buffer)

@@ -1,5 +1,6 @@
 #!/usr/bin/perl
 
+use lib '../../perl/blib/lib';
 use strict;
 use warnings;
 use Git;
@@ -68,12 +69,17 @@ if (not @tests) {
 	@tests = glob "p????-*.sh";
 }
 
+my $resultsdir = "test-results";
+if ($ENV{GIT_PERF_SUBSECTION} ne "") {
+	$resultsdir .= "/" . $ENV{GIT_PERF_SUBSECTION};
+}
+
 my @subtests;
 my %shorttests;
 for my $t (@tests) {
 	$t =~ s{(?:.*/)?(p(\d+)-[^/]+)\.sh$}{$1} or die "bad test name: $t";
 	my $n = $2;
-	my $fname = "test-results/$t.subtests";
+	my $fname = "$resultsdir/$t.subtests";
 	open my $fp, "<", $fname or die "cannot open $fname: $!";
 	for (<$fp>) {
 		chomp;
@@ -87,6 +93,7 @@ for my $t (@tests) {
 sub read_descr {
 	my $name = shift;
 	open my $fh, "<", $name or return "<error reading description>";
+	binmode $fh, ":utf8" or die "PANIC on binmode: $!";
 	my $line = <$fh>;
 	close $fh or die "cannot close $name";
 	chomp $line;
@@ -96,7 +103,7 @@ sub read_descr {
 my %descrs;
 my $descrlen = 4; # "Test"
 for my $t (@subtests) {
-	$descrs{$t} = $shorttests{$t}.": ".read_descr("test-results/$t.descr");
+	$descrs{$t} = $shorttests{$t}.": ".read_descr("$resultsdir/$t.descr");
 	$descrlen = length $descrs{$t} if length $descrs{$t}>$descrlen;
 }
 
@@ -136,7 +143,7 @@ for my $t (@subtests) {
 	my $firstr;
 	for my $i (0..$#dirs) {
 		my $d = $dirs[$i];
-		$times{$prefixes{$d}.$t} = [get_times("test-results/$prefixes{$d}$t.times")];
+		$times{$prefixes{$d}.$t} = [get_times("$resultsdir/$prefixes{$d}$t.times")];
 		my ($r,$u,$s) = @{$times{$prefixes{$d}.$t}};
 		my $w = length format_times($r,$u,$s,$firstr);
 		$colwidth[$i] = $w if $w > $colwidth[$i];
@@ -145,6 +152,8 @@ for my $t (@subtests) {
 }
 my $totalwidth = 3*@dirs+$descrlen;
 $totalwidth += $_ for (@colwidth);
+
+binmode STDOUT, ":utf8" or die "PANIC on binmode: $!";
 
 printf "%-${descrlen}s", "Test";
 for my $i (0..$#dirs) {

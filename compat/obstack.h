@@ -14,9 +14,8 @@
    Lesser General Public License for more details.
 
    You should have received a copy of the GNU Lesser General Public
-   License along with the GNU C Library; if not, write to the Free
-   Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
-   Boston, MA 02110-1301, USA.  */
+   License along with the GNU C Library; if not, see
+   <http://www.gnu.org/licenses/>.  */
 
 /* Summary:
 
@@ -128,7 +127,7 @@ extern "C" {
 
 #define __BPTR_ALIGN(B, P, A) ((B) + (((P) - (B) + (A)) & ~(A)))
 
-/* Similiar to _BPTR_ALIGN (B, P, A), except optimize the common case
+/* Similar to _BPTR_ALIGN (B, P, A), except optimize the common case
    where pointers can be converted to integers, aligned as integers,
    and converted back again.  If PTR_INT_TYPE is narrower than a
    pointer (e.g., the AS/400), play it safe and compute the alignment

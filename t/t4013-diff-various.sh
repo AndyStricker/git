@@ -90,6 +90,16 @@ test_expect_success setup '
 	git commit -m "Rearranged lines in dir/sub" &&
 	git checkout master &&
 
+	GIT_AUTHOR_DATE="2006-06-26 00:06:00 +0000" &&
+	GIT_COMMITTER_DATE="2006-06-26 00:06:00 +0000" &&
+	export GIT_AUTHOR_DATE GIT_COMMITTER_DATE &&
+	git checkout -b mode initial &&
+	git update-index --chmod=+x file0 &&
+	git commit -m "update mode" &&
+	git checkout -f master &&
+
+	git config diff.renames false &&
+
 	git show-branch
 '
 
@@ -107,28 +117,50 @@ test_expect_success setup '
 +*++ [initial] Initial
 EOF
 
-V=`git version | sed -e 's/^git version //' -e 's/\./\\./g'`
-while read cmd
+V=$(git version | sed -e 's/^git version //' -e 's/\./\\./g')
+while read magic cmd
 do
-	case "$cmd" in
-	'' | '#'*) continue ;;
+	case "$magic" in
+	'' | '#'*)
+		continue ;;
+	:*)
+		magic=${magic#:}
+		label="$magic-$cmd"
+		case "$magic" in
+		noellipses) ;;
+		*)
+			die "bug in t4103: unknown magic $magic" ;;
+		esac ;;
+	*)
+		cmd="$magic $cmd" magic=
+		label="$cmd" ;;
 	esac
-	test=`echo "$cmd" | sed -e 's|[/ ][/ ]*|_|g'`
-	pfx=`printf "%04d" $test_count`
+	test=$(echo "$label" | sed -e 's|[/ ][/ ]*|_|g')
+	pfx=$(printf "%04d" $test_count)
 	expect="$TEST_DIRECTORY/t4013/diff.$test"
 	actual="$pfx-diff.$test"
 
-	test_expect_success "git $cmd" '
+	test_expect_success "git $cmd # magic is ${magic:-"(not used)"}" '
 		{
-			echo "\$ git $cmd"
-			git $cmd |
+			echo "$ git $cmd"
+			case "$magic" in
+			"")
+				GIT_PRINT_SHA1_ELLIPSIS=yes git $cmd ;;
+			noellipses)
+				git $cmd ;;
+			esac |
 			sed -e "s/^\\(-*\\)$V\\(-*\\)\$/\\1g-i-t--v-e-r-s-i-o-n\2/" \
 			    -e "s/^\\(.*mixed; boundary=\"-*\\)$V\\(-*\\)\"\$/\\1g-i-t--v-e-r-s-i-o-n\2\"/"
 			echo "\$"
 		} >"$actual" &&
 		if test -f "$expect"
 		then
-			test_cmp "$expect" "$actual" &&
+			case $cmd in
+			*format-patch* | *-stat*)
+				test_i18ncmp "$expect" "$actual";;
+			*)
+				test_cmp "$expect" "$actual";;
+			esac &&
 			rm -f "$actual"
 		else
 			# this is to help developing new tests.
@@ -143,9 +175,12 @@ diff-tree -r --abbrev initial
 diff-tree -r --abbrev=4 initial
 diff-tree --root initial
 diff-tree --root --abbrev initial
+:noellipses diff-tree --root --abbrev initial
 diff-tree --root -r initial
 diff-tree --root -r --abbrev initial
+:noellipses diff-tree --root -r --abbrev initial
 diff-tree --root -r --abbrev=4 initial
+:noellipses diff-tree --root -r --abbrev=4 initial
 diff-tree -p initial
 diff-tree --root -p initial
 diff-tree --patch-with-stat initial
@@ -185,11 +220,16 @@ diff-tree --pretty side
 diff-tree --pretty -p side
 diff-tree --pretty --patch-with-stat side
 
+diff-tree initial mode
+diff-tree --stat initial mode
+diff-tree --summary initial mode
+
 diff-tree master
 diff-tree -p master
 diff-tree -p -m master
 diff-tree -c master
 diff-tree -c --abbrev master
+:noellipses diff-tree -c --abbrev master
 diff-tree --cc master
 # stat only should show the diffstat with the first parent
 diff-tree -c --stat master
@@ -236,8 +276,10 @@ rev-list --parents HEAD
 rev-list --children HEAD
 
 whatchanged master
+:noellipses whatchanged master
 whatchanged -p master
 whatchanged --root master
+:noellipses whatchanged --root master
 whatchanged --root -p master
 whatchanged --patch-with-stat master
 whatchanged --root --patch-with-stat master
@@ -247,6 +289,7 @@ whatchanged --root -c --patch-with-stat --summary master
 # improved by Timo's patch
 whatchanged --root --cc --patch-with-stat --summary master
 whatchanged -SF master
+:noellipses whatchanged -SF master
 whatchanged -SF -p master
 
 log --patch-with-stat master -- dir/
@@ -265,6 +308,7 @@ show --stat side
 show --stat --summary side
 show --patch-with-stat side
 show --patch-with-raw side
+:noellipses show --patch-with-raw side
 show --patch-with-stat --summary side
 
 format-patch --stdout initial..side
@@ -292,16 +336,31 @@ diff -r --stat initial..side
 diff initial..side
 diff --patch-with-stat initial..side
 diff --patch-with-raw initial..side
+:noellipses diff --patch-with-raw initial..side
 diff --patch-with-stat -r initial..side
 diff --patch-with-raw -r initial..side
+:noellipses diff --patch-with-raw -r initial..side
 diff --name-status dir2 dir
 diff --no-index --name-status dir2 dir
 diff --no-index --name-status -- dir2 dir
 diff --no-index dir dir3
 diff master master^ side
+# Can't use spaces...
+diff --line-prefix=abc master master^ side
 diff --dirstat master~1 master~2
 diff --dirstat initial rearrange
 diff --dirstat-by-file initial rearrange
+# No-index --abbrev and --no-abbrev
+diff --raw initial
+:noellipses diff --raw initial
+diff --raw --abbrev=4 initial
+:noellipses diff --raw --abbrev=4 initial
+diff --raw --no-abbrev initial
+diff --no-index --raw dir2 dir
+:noellipses diff --no-index --raw dir2 dir
+diff --no-index --raw --abbrev=4 dir2 dir
+:noellipses diff --no-index --raw --abbrev=4 dir2 dir
+diff --no-index --raw --no-abbrev dir2 dir
 EOF
 
 test_expect_success 'log -S requires an argument' '
@@ -317,6 +376,20 @@ test_expect_success 'diff --cached on unborn branch' '
 test_expect_success 'diff --cached -- file on unborn branch' '
 	git diff --cached -- file0 >result &&
 	test_cmp "$TEST_DIRECTORY/t4013/diff.diff_--cached_--_file0" result
+'
+test_expect_success 'diff --line-prefix with spaces' '
+	git diff --line-prefix="| | | " --cached -- file0 >result &&
+	test_cmp "$TEST_DIRECTORY/t4013/diff.diff_--line-prefix_--cached_--_file0" result
+'
+
+test_expect_success 'diff-tree --stdin with log formatting' '
+	cat >expect <<-\EOF &&
+	Side
+	Third
+	Second
+	EOF
+	git rev-list master | git diff-tree --stdin --format=%s -s >actual &&
+	test_cmp expect actual
 '
 
 test_done

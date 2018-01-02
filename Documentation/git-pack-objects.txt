@@ -12,14 +12,16 @@ SYNOPSIS
 'git pack-objects' [-q | --progress | --all-progress] [--all-progress-implied]
 	[--no-reuse-delta] [--delta-base-offset] [--non-empty]
 	[--local] [--incremental] [--window=<n>] [--depth=<n>]
-	[--revs [--unpacked | --all]] [--stdout | base-name]
-	[--keep-true-parents] < object-list
+	[--revs [--unpacked | --all]]
+	[--stdout [--filter=<filter-spec>] | base-name]
+	[--shallow] [--keep-true-parents] < object-list
 
 
 DESCRIPTION
 -----------
-Reads list of objects from the standard input, and writes a packed
-archive with specified base-name, or to the standard output.
+Reads list of objects from the standard input, and writes either one or
+more packed archives with the specified base-name to disk, or a packed
+archive to the standard output.
 
 A packed archive is an efficient way to transfer a set of objects
 between two repositories as well as an access efficient archival
@@ -35,7 +37,7 @@ A pack index file (.idx) is generated for fast, random access to the
 objects in the pack. Placing both the index file (.idx) and the packed
 archive (.pack) in the pack/ subdirectory of $GIT_OBJECT_DIRECTORY (or
 any of the directories on $GIT_ALTERNATE_OBJECT_DIRECTORIES)
-enables git to read from the pack archive.
+enables Git to read from the pack archive.
 
 The 'git unpack-objects' command can read the packed archive and
 expand the objects contained in the pack into "one-file
@@ -47,12 +49,11 @@ transport by their peers.
 OPTIONS
 -------
 base-name::
-	Write into a pair of files (.pack and .idx), using
+	Write into pairs of files (.pack and .idx), using
 	<base-name> to determine the name of the created file.
-	When this option is used, the two files are written in
-	<base-name>-<SHA1>.{pack,idx} files.  <SHA1> is a hash
-	of the sorted object names to make the resulting filename
-	based on the pack content, and written to the standard
+	When this option is used, the two files in a pair are written in
+	<base-name>-<SHA-1>.{pack,idx} files.  <SHA-1> is a hash
+	based on the pack content and is written to the standard
 	output of the command.
 
 --stdout::
@@ -65,6 +66,8 @@ base-name::
 	the same way as 'git rev-list' with the `--objects` flag
 	uses its `commit` arguments to build the list of objects it
 	outputs.  The objects on the resulting list are packed.
+	Besides revisions, `--not` or `--shallow <SHA-1>` lines are
+	also accepted.
 
 --unpacked::
 	This implies `--revs`.  When processing the list of
@@ -80,7 +83,7 @@ base-name::
 --include-tag::
 	Include unasked-for annotated tags if the object they
 	reference was included in the resulting packfile.  This
-	can be useful to send new tags to native git clients.
+	can be useful to send new tags to native Git clients.
 
 --window=<n>::
 --depth=<n>::
@@ -103,13 +106,18 @@ base-name::
 	out of memory with a large window, but still be able to take
 	advantage of the large window for the smaller objects.  The
 	size can be suffixed with "k", "m", or "g".
-	`--window-memory=0` makes memory usage unlimited, which is the
-	default.
+	`--window-memory=0` makes memory usage unlimited.  The default
+	is taken from the `pack.windowMemory` configuration variable.
 
 --max-pack-size=<n>::
-	Maximum size of each output pack file. The size can be suffixed with
+	In unusual scenarios, you may not be able to create files
+	larger than a certain size on your filesystem, and this option
+	can be used to tell the command to split the output packfile
+	into multiple independent packfiles, each not larger than the
+	given size. The size can be suffixed with
 	"k", "m", or "g". The minimum size allowed is limited to 1 MiB.
-	If specified,  multiple packfiles may be created.
+	This option
+	prevents the creation of a bitmap index.
 	The default is unlimited, unless the config variable
 	`pack.packSizeLimit` is set.
 
@@ -185,14 +193,19 @@ base-name::
 	option only makes sense in conjunction with --stdout.
 +
 Note: A thin pack violates the packed archive format by omitting
-required objects and is thus unusable by git without making it
+required objects and is thus unusable by Git without making it
 self-contained. Use `git index-pack --fix-thin`
 (see linkgit:git-index-pack[1]) to restore the self-contained property.
+
+--shallow::
+	Optimize a pack that will be provided to a client with a shallow
+	repository.  This option, combined with --thin, can result in a
+	smaller pack at the cost of speed.
 
 --delta-base-offset::
 	A packed archive can express the base object of a delta as
 	either a 20-byte object name or as an offset in the
-	stream, but ancient versions of git don't understand the
+	stream, but ancient versions of Git don't understand the
 	latter.  By default, 'git pack-objects' only uses the
 	former format for better compatibility.  This option
 	allows the command to use the latter format for
@@ -202,7 +215,7 @@ self-contained. Use `git index-pack --fix-thin`
 +
 Note: Porcelain commands such as `git gc` (see linkgit:git-gc[1]),
 `git repack` (see linkgit:git-repack[1]) pass this option by default
-in modern git when they put objects in your repository into pack files.
+in modern Git when they put objects in your repository into pack files.
 So does `git bundle` (see linkgit:git-bundle[1]) when it creates a bundle.
 
 --threads=<n>::
@@ -212,7 +225,7 @@ So does `git bundle` (see linkgit:git-bundle[1]) when it creates a bundle.
 	This is meant to reduce packing time on multiprocessor machines.
 	The required amount of memory for the delta search window is
 	however multiplied by the number of threads.
-	Specifying 0 will cause git to auto-detect the number of CPU's
+	Specifying 0 will cause Git to auto-detect the number of CPU's
 	and set the number of threads accordingly.
 
 --index-version=<version>[,<offset>]::
@@ -223,6 +236,25 @@ So does `git bundle` (see linkgit:git-bundle[1]) when it creates a bundle.
 --keep-true-parents::
 	With this option, parents that are hidden by grafts are packed
 	nevertheless.
+
+--filter=<filter-spec>::
+	Requires `--stdout`.  Omits certain objects (usually blobs) from
+	the resulting packfile.  See linkgit:git-rev-list[1] for valid
+	`<filter-spec>` forms.
+
+--no-filter::
+	Turns off any previous `--filter=` argument.
+
+--missing=<missing-action>::
+	A debug option to help with future "partial clone" development.
+	This option specifies how missing objects are handled.
++
+The form '--missing=error' requests that pack-objects stop with an error if
+a missing object is encountered.  This is the default action.
++
+The form '--missing=allow-any' will allow object traversal to continue
+if a missing object is encountered.  Missing objects will silently be
+omitted from the results.
 
 SEE ALSO
 --------

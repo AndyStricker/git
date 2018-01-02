@@ -3,11 +3,9 @@
  * See LICENSE for details.
  */
 
-#include "git-compat-util.h"
-#include "strbuf.h"
+#include "cache.h"
 #include "quote.h"
 #include "fast_export.h"
-#include "repo_tree.h"
 #include "strbuf.h"
 #include "svndiff.h"
 #include "sliding_window.h"
@@ -42,11 +40,6 @@ void fast_export_deinit(void)
 		die_errno("error closing fast-import feedback stream");
 }
 
-void fast_export_reset(void)
-{
-	buffer_reset(&report_buffer);
-}
-
 void fast_export_delete(const char *path)
 {
 	putchar('D');
@@ -73,11 +66,33 @@ void fast_export_modify(const char *path, uint32_t mode, const char *dataref)
 	putchar('\n');
 }
 
+void fast_export_begin_note(uint32_t revision, const char *author,
+		const char *log, timestamp_t timestamp, const char *note_ref)
+{
+	static int firstnote = 1;
+	size_t loglen = strlen(log);
+	printf("commit %s\n", note_ref);
+	printf("committer %s <%s@%s> %"PRItime" +0000\n", author, author, "local", timestamp);
+	printf("data %"PRIuMAX"\n", (uintmax_t)loglen);
+	fwrite(log, loglen, 1, stdout);
+	if (firstnote) {
+		if (revision > 1)
+			printf("from %s^0", note_ref);
+		firstnote = 0;
+	}
+	fputc('\n', stdout);
+}
+
+void fast_export_note(const char *committish, const char *dataref)
+{
+	printf("N %s %s\n", dataref, committish);
+}
+
 static char gitsvnline[MAX_GITSVN_LINE_LEN];
 void fast_export_begin_commit(uint32_t revision, const char *author,
 			const struct strbuf *log,
 			const char *uuid, const char *url,
-			unsigned long timestamp)
+			timestamp_t timestamp, const char *local_ref)
 {
 	static const struct strbuf empty = STRBUF_INIT;
 	if (!log)
@@ -89,9 +104,9 @@ void fast_export_begin_commit(uint32_t revision, const char *author,
 	} else {
 		*gitsvnline = '\0';
 	}
-	printf("commit refs/heads/master\n");
+	printf("commit %s\n", local_ref);
 	printf("mark :%"PRIu32"\n", revision);
-	printf("committer %s <%s@%s> %ld +0000\n",
+	printf("committer %s <%s@%s> %"PRItime" +0000\n",
 		   *author ? author : "nobody",
 		   *author ? author : "nobody",
 		   *uuid ? uuid : "local", timestamp);
@@ -146,24 +161,15 @@ static void die_short_read(struct line_buffer *input)
 	die("invalid dump: unexpected end of file");
 }
 
-static int ends_with(const char *s, size_t len, const char *suffix)
-{
-	const size_t suffixlen = strlen(suffix);
-	if (len < suffixlen)
-		return 0;
-	return !memcmp(s + len - suffixlen, suffix, suffixlen);
-}
-
 static int parse_cat_response_line(const char *header, off_t *len)
 {
-	size_t headerlen = strlen(header);
 	uintmax_t n;
 	const char *type;
 	const char *end;
 
-	if (ends_with(header, headerlen, " missing"))
+	if (ends_with(header, " missing"))
 		return error("cat-blob reports missing blob: %s", header);
-	type = memmem(header, headerlen, " blob ", strlen(" blob "));
+	type = strstr(header, " blob ");
 	if (!type)
 		return error("cat-blob header has wrong object type: %s", header);
 	n = strtoumax(type + strlen(" blob "), (char **) &end, 10);
@@ -203,7 +209,7 @@ static long apply_delta(off_t len, struct line_buffer *input,
 			die("invalid cat-blob response: %s", response);
 		check_preimage_overflow(preimage.max_off, 1);
 	}
-	if (old_mode == REPO_MODE_LNK) {
+	if (old_mode == S_IFLNK) {
 		strbuf_addstr(&preimage.buf, "link ");
 		check_preimage_overflow(preimage.max_off, strlen("link "));
 		preimage.max_off += strlen("link ");
@@ -227,10 +233,17 @@ static long apply_delta(off_t len, struct line_buffer *input,
 	return ret;
 }
 
+void fast_export_buf_to_data(const struct strbuf *data)
+{
+	printf("data %"PRIuMAX"\n", (uintmax_t)data->len);
+	fwrite(data->buf, data->len, 1, stdout);
+	fputc('\n', stdout);
+}
+
 void fast_export_data(uint32_t mode, off_t len, struct line_buffer *input)
 {
 	assert(len >= 0);
-	if (mode == REPO_MODE_LNK) {
+	if (mode == S_IFLNK) {
 		/* svn symlink blobs start with "link " */
 		if (len < 5)
 			die("invalid dump: symlink too short for \"link\" prefix");
@@ -259,7 +272,7 @@ static int parse_ls_response(const char *response, uint32_t *mode,
 	}
 
 	/* Mode. */
-	if (response_end - response < strlen("100644") ||
+	if (response_end - response < (signed) strlen("100644") ||
 	    response[strlen("100644")] != ' ')
 		die("invalid ls response: missing mode: %s", response);
 	*mode = 0;
@@ -272,7 +285,7 @@ static int parse_ls_response(const char *response, uint32_t *mode,
 	}
 
 	/* ' blob ' or ' tree ' */
-	if (response_end - response < strlen(" blob ") ||
+	if (response_end - response < (signed) strlen(" blob ") ||
 	    (response[1] != 'b' && response[1] != 't'))
 		die("unexpected ls response: not a tree or blob: %s", response);
 	response += strlen(" blob ");
@@ -298,6 +311,40 @@ int fast_export_ls(const char *path, uint32_t *mode, struct strbuf *dataref)
 	return parse_ls_response(get_response_line(), mode, dataref);
 }
 
+const char *fast_export_read_path(const char *path, uint32_t *mode_out)
+{
+	int err;
+	static struct strbuf buf = STRBUF_INIT;
+
+	strbuf_reset(&buf);
+	err = fast_export_ls(path, mode_out, &buf);
+	if (err) {
+		if (errno != ENOENT)
+			die_errno("BUG: unexpected fast_export_ls error");
+		/* Treat missing paths as directories. */
+		*mode_out = S_IFDIR;
+		return NULL;
+	}
+	return buf.buf;
+}
+
+void fast_export_copy(uint32_t revision, const char *src, const char *dst)
+{
+	int err;
+	uint32_t mode;
+	static struct strbuf data = STRBUF_INIT;
+
+	strbuf_reset(&data);
+	err = fast_export_ls_rev(revision, src, &mode, &data);
+	if (err) {
+		if (errno != ENOENT)
+			die_errno("BUG: unexpected fast_export_ls_rev error");
+		fast_export_delete(dst);
+		return;
+	}
+	fast_export_modify(dst, mode, data.buf);
+}
+
 void fast_export_blob_delta(uint32_t mode,
 				uint32_t old_mode, const char *old_data,
 				off_t len, struct line_buffer *input)
@@ -306,7 +353,7 @@ void fast_export_blob_delta(uint32_t mode,
 
 	assert(len >= 0);
 	postimage_len = apply_delta(len, input, old_data, old_mode);
-	if (mode == REPO_MODE_LNK) {
+	if (mode == S_IFLNK) {
 		buffer_skip_bytes(&postimage, strlen("link "));
 		postimage_len -= strlen("link ");
 	}

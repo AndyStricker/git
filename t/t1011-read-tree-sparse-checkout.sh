@@ -15,11 +15,11 @@ test_description='sparse checkout tests
 . "$TEST_DIRECTORY"/lib-read-tree.sh
 
 test_expect_success 'setup' '
-	cat >expected <<-\EOF &&
+	cat >expected <<-EOF &&
 	100644 77f0ba1734ed79d12881f81b36ee134de6a3327b 0	init.t
-	100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0	sub/added
-	100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0	sub/addedtoo
-	100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0	subsub/added
+	100644 $EMPTY_BLOB 0	sub/added
+	100644 $EMPTY_BLOB 0	sub/addedtoo
+	100644 $EMPTY_BLOB 0	subsub/added
 	EOF
 	cat >expected.swt <<-\EOF &&
 	H init.t
@@ -244,10 +244,34 @@ test_expect_success 'print errors when failed to update worktree' '
 error: The following untracked working tree files would be overwritten by checkout:
 	sub/added
 	sub/addedtoo
-Please move or remove them before you can switch branches.
+Please move or remove them before you switch branches.
 Aborting
 EOF
-	test_cmp expected actual
+	test_i18ncmp expected actual
+'
+
+test_expect_success 'checkout without --ignore-skip-worktree-bits' '
+	echo "*" >.git/info/sparse-checkout &&
+	git checkout -f top &&
+	test_path_is_file init.t &&
+	echo sub >.git/info/sparse-checkout &&
+	git checkout &&
+	echo modified >> sub/added &&
+	git checkout . &&
+	test_path_is_missing init.t &&
+	git diff --exit-code HEAD
+'
+
+test_expect_success 'checkout with --ignore-skip-worktree-bits' '
+	echo "*" >.git/info/sparse-checkout &&
+	git checkout -f top &&
+	test_path_is_file init.t &&
+	echo sub >.git/info/sparse-checkout &&
+	git checkout &&
+	echo modified >> sub/added &&
+	git checkout --ignore-skip-worktree-bits . &&
+	test_path_is_file init.t &&
+	git diff --exit-code HEAD
 '
 
 test_done

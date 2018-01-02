@@ -53,9 +53,9 @@ long buffer_tmpfile_prepare_to_read(struct line_buffer *buf)
 {
 	long pos = ftell(buf->infile);
 	if (pos < 0)
-		return error("ftell error: %s", strerror(errno));
+		return error_errno("ftell error");
 	if (fseek(buf->infile, 0, SEEK_SET))
-		return error("seek error: %s", strerror(errno));
+		return error_errno("seek error");
 	return pos;
 }
 
@@ -123,8 +123,4 @@ off_t buffer_skip_bytes(struct line_buffer *buf, off_t nbytes)
 		done += fread(byte_buffer, 1, in, buf->infile);
 	}
 	return done;
-}
-
-void buffer_reset(struct line_buffer *buf)
-{
 }

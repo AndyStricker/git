@@ -9,7 +9,9 @@ test_description='git grep various.
 . ./test-lib.sh
 
 cat >hello.c <<EOF
+#include <assert.h>
 #include <stdio.h>
+
 int main(int argc, const char **argv)
 {
 	printf("Hello world.\n");
@@ -37,6 +39,10 @@ test_expect_success setup '
 		echo "a+bc"
 		echo "abc"
 	} >ab &&
+	{
+		echo d &&
+		echo 0
+	} >d0 &&
 	echo vvv >v &&
 	echo ww w >w &&
 	echo x x xx x >x &&
@@ -54,6 +60,18 @@ test_expect_success setup '
 		echo " line with leading space3"
 		echo "line without leading space2"
 	} >space &&
+	cat >hello.ps1 <<-\EOF &&
+	# No-op.
+	function dummy() {}
+
+	# Say hello.
+	function hello() {
+	  echo "Hello world."
+	} # hello
+
+	# Still a no-op.
+	function dummy() {}
+	EOF
 	git add . &&
 	test_tick &&
 	git commit -m initial
@@ -105,7 +123,7 @@ do
 
 	test_expect_success "grep -w $L (w)" '
 		: >expected &&
-		test_must_fail git grep -n -w -e "^w" >actual &&
+		test_must_fail git grep -n -w -e "^w" $H >actual &&
 		test_cmp expected actual
 	'
 
@@ -175,7 +193,7 @@ do
 
 	test_expect_success "grep -c $L (no /dev/null)" '
 		! git grep -c test $H | grep /dev/null
-        '
+	'
 
 	test_expect_success "grep --max-depth -1 $L" '
 		{
@@ -240,14 +258,108 @@ do
 		test_cmp expected actual
 	'
 	test_expect_success "grep $L with grep.extendedRegexp=false" '
-		echo "ab:a+bc" >expected &&
-		git -c grep.extendedRegexp=false grep "a+b*c" ab >actual &&
+		echo "${HC}ab:a+bc" >expected &&
+		git -c grep.extendedRegexp=false grep "a+b*c" $H ab >actual &&
 		test_cmp expected actual
 	'
 
 	test_expect_success "grep $L with grep.extendedRegexp=true" '
-		echo "ab:abc" >expected &&
-		git -c grep.extendedRegexp=true grep "a+b*c" ab >actual &&
+		echo "${HC}ab:abc" >expected &&
+		git -c grep.extendedRegexp=true grep "a+b*c" $H ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success "grep $L with grep.patterntype=basic" '
+		echo "${HC}ab:a+bc" >expected &&
+		git -c grep.patterntype=basic grep "a+b*c" $H ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success "grep $L with grep.patterntype=extended" '
+		echo "${HC}ab:abc" >expected &&
+		git -c grep.patterntype=extended grep "a+b*c" $H ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success "grep $L with grep.patterntype=fixed" '
+		echo "${HC}ab:a+b*c" >expected &&
+		git -c grep.patterntype=fixed grep "a+b*c" $H ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success PCRE "grep $L with grep.patterntype=perl" '
+		echo "${HC}ab:a+b*c" >expected &&
+		git -c grep.patterntype=perl grep "a\x{2b}b\x{2a}c" $H ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success !PCRE "grep $L with grep.patterntype=perl errors without PCRE" '
+		test_must_fail git -c grep.patterntype=perl grep "foo.*bar"
+	'
+
+	test_expect_success "grep $L with grep.patternType=default and grep.extendedRegexp=true" '
+		echo "${HC}ab:abc" >expected &&
+		git \
+			-c grep.patternType=default \
+			-c grep.extendedRegexp=true \
+			grep "a+b*c" $H ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success "grep $L with grep.extendedRegexp=true and grep.patternType=default" '
+		echo "${HC}ab:abc" >expected &&
+		git \
+			-c grep.extendedRegexp=true \
+			-c grep.patternType=default \
+			grep "a+b*c" $H ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success "grep $L with grep.patternType=extended and grep.extendedRegexp=false" '
+		echo "${HC}ab:abc" >expected &&
+		git \
+			-c grep.patternType=extended \
+			-c grep.extendedRegexp=false \
+			grep "a+b*c" $H ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success "grep $L with grep.patternType=basic and grep.extendedRegexp=true" '
+		echo "${HC}ab:a+bc" >expected &&
+		git \
+			-c grep.patternType=basic \
+			-c grep.extendedRegexp=true \
+			grep "a+b*c" $H ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success "grep $L with grep.extendedRegexp=false and grep.patternType=extended" '
+		echo "${HC}ab:abc" >expected &&
+		git \
+			-c grep.extendedRegexp=false \
+			-c grep.patternType=extended \
+			grep "a+b*c" $H ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success "grep $L with grep.extendedRegexp=true and grep.patternType=basic" '
+		echo "${HC}ab:a+bc" >expected &&
+		git \
+			-c grep.extendedRegexp=true \
+			-c grep.patternType=basic \
+			grep "a+b*c" $H ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success "grep --count $L" '
+		echo ${HC}ab:3 >expected &&
+		git grep --count -e b $H -- ab >actual &&
+		test_cmp expected actual
+	'
+
+	test_expect_success "grep --count -h $L" '
+		echo 3 >expected &&
+		git grep --count -h -e b $H -- ab >actual &&
 		test_cmp expected actual
 	'
 done
@@ -263,7 +375,7 @@ test_expect_success 'grep -l -C' '
 cat >expected <<EOF
 file:5
 EOF
-test_expect_success 'grep -l -C' '
+test_expect_success 'grep -c -C' '
 	git grep -c -C1 foo >actual &&
 	test_cmp expected actual
 '
@@ -272,6 +384,11 @@ test_expect_success 'grep -L -C' '
 	git ls-files >expected &&
 	git grep -L -C1 nonexistent_string >actual &&
 	test_cmp expected actual
+'
+
+test_expect_success 'grep --files-without-match --quiet' '
+	git grep --files-without-match --quiet nonexistent_string >actual &&
+	test_cmp /dev/null actual
 '
 
 cat >expected <<EOF
@@ -351,6 +468,11 @@ test_expect_success 'grep -f, multiple patterns' '
 	test_cmp expected actual
 '
 
+test_expect_success 'grep, multiple patterns' '
+	git grep "$(cat patterns)" >actual &&
+	test_cmp expected actual
+'
+
 cat >expected <<EOF
 file:foo mmap bar
 file:foo_mmap bar
@@ -394,17 +516,6 @@ test_expect_success 'grep -q, silently report matches' '
 	test_cmp empty actual
 '
 
-# Create 1024 file names that sort between "y" and "z" to make sure
-# the two files are handled by different calls to an external grep.
-# This depends on MAXARGS in builtin-grep.c being 1024 or less.
-c32="0 1 2 3 4 5 6 7 8 9 a b c d e f g h i j k l m n o p q r s t u v"
-test_expect_success 'grep -C1, hunk mark between files' '
-	for a in $c32; do for b in $c32; do : >y-$a$b; done; done &&
-	git add y-?? &&
-	git grep -C1 "^[yz]" >actual &&
-	test_cmp expected actual
-'
-
 test_expect_success 'grep -C1 hunk mark between files' '
 	git grep -C1 "^[yz]" >actual &&
 	test_cmp expected actual
@@ -430,31 +541,41 @@ test_expect_success 'log grep setup' '
 
 test_expect_success 'log grep (1)' '
 	git log --author=author --pretty=tformat:%s >actual &&
-	( echo third ; echo initial ) >expect &&
+	{
+		echo third && echo initial
+	} >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'log grep (2)' '
 	git log --author=" * " -F --pretty=tformat:%s >actual &&
-	( echo second ) >expect &&
+	{
+		echo second
+	} >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'log grep (3)' '
 	git log --author="^A U" --pretty=tformat:%s >actual &&
-	( echo third ; echo initial ) >expect &&
+	{
+		echo third && echo initial
+	} >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'log grep (4)' '
 	git log --author="frotz\.com>$" --pretty=tformat:%s >actual &&
-	( echo second ) >expect &&
+	{
+		echo second
+	} >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'log grep (5)' '
 	git log --author=Thor -F --pretty=tformat:%s >actual &&
-	( echo third ; echo initial ) >expect &&
+	{
+		echo third && echo initial
+	} >expect &&
 	test_cmp expect actual
 '
 
@@ -464,11 +585,49 @@ test_expect_success 'log grep (6)' '
 	test_cmp expect actual
 '
 
-test_expect_success 'log --grep --author implicitly uses all-match' '
-	# grep matches initial and second but not third
-	# author matches only initial and third
-	git log --author="A U Thor" --grep=s --grep=l --format=%s >actual &&
-	echo initial >expect &&
+test_expect_success 'log grep (7)' '
+	git log -g --grep-reflog="commit: third" --pretty=tformat:%s >actual &&
+	echo third >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log grep (8)' '
+	git log -g --grep-reflog="commit: third" --grep-reflog="commit: second" --pretty=tformat:%s >actual &&
+	{
+		echo third && echo second
+	} >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log grep (9)' '
+	git log -g --grep-reflog="commit: third" --author="Thor" --pretty=tformat:%s >actual &&
+	echo third >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log grep (9)' '
+	git log -g --grep-reflog="commit: third" --author="non-existent" --pretty=tformat:%s >actual &&
+	: >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log --grep-reflog can only be used under -g' '
+	test_must_fail git log --grep-reflog="commit: third"
+'
+
+test_expect_success 'log with multiple --grep uses union' '
+	git log --grep=i --grep=r --format=%s >actual &&
+	{
+		echo fourth && echo third && echo initial
+	} >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log --all-match with multiple --grep uses intersection' '
+	git log --all-match --grep=i --grep=r --format=%s >actual &&
+	{
+		echo third
+	} >expect &&
 	test_cmp expect actual
 '
 
@@ -480,7 +639,47 @@ test_expect_success 'log with multiple --author uses union' '
 	test_cmp expect actual
 '
 
-test_expect_success 'log with --grep and multiple --author uses all-match' '
+test_expect_success 'log --all-match with multiple --author still uses union' '
+	git log --all-match --author="Thor" --author="Aster" --format=%s >actual &&
+	{
+	    echo third && echo second && echo initial
+	} >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log --grep --author uses intersection' '
+	# grep matches only third and fourth
+	# author matches only initial and third
+	git log --author="A U Thor" --grep=r --format=%s >actual &&
+	{
+		echo third
+	} >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log --grep --grep --author takes union of greps and intersects with author' '
+	# grep matches initial and second but not third
+	# author matches only initial and third
+	git log --author="A U Thor" --grep=s --grep=l --format=%s >actual &&
+	{
+		echo initial
+	} >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log ---all-match -grep --author --author still takes union of authors and intersects with grep' '
+	# grep matches only initial and third
+	# author matches all but second
+	git log --all-match --author="Thor" --author="Night" --grep=i --format=%s >actual &&
+	{
+	    echo third && echo initial
+	} >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log --grep --author --author takes union of authors and intersects with grep' '
+	# grep matches only initial and third
+	# author matches all but second
 	git log --author="Thor" --author="Night" --grep=i --format=%s >actual &&
 	{
 	    echo third && echo initial
@@ -488,9 +687,25 @@ test_expect_success 'log with --grep and multiple --author uses all-match' '
 	test_cmp expect actual
 '
 
-test_expect_success 'log with --grep and multiple --author uses all-match' '
-	git log --author="Thor" --author="Night" --grep=q --format=%s >actual &&
-	>expect &&
+test_expect_success 'log --all-match --grep --grep --author takes intersection' '
+	# grep matches only third
+	# author matches only initial and third
+	git log --all-match --author="A U Thor" --grep=i --grep=r --format=%s >actual &&
+	{
+		echo third
+	} >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log --author does not search in timestamp' '
+	: >expect &&
+	git log --author="$GIT_AUTHOR_DATE" >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log --committer does not search in timestamp' '
+	: >expect &&
+	git log --committer="$GIT_COMMITTER_DATE" >actual &&
 	test_cmp expect actual
 '
 
@@ -527,6 +742,7 @@ test_expect_success 'grep -p' '
 
 cat >expected <<EOF
 hello.c-#include <stdio.h>
+hello.c-
 hello.c=int main(int argc, const char **argv)
 hello.c-{
 hello.c-	printf("Hello world.\n");
@@ -553,17 +769,70 @@ test_expect_success 'grep -W' '
 '
 
 cat >expected <<EOF
-hello.c=	printf("Hello world.\n");
-hello.c:	return 0;
-hello.c-	/* char ?? */
+hello.c-#include <assert.h>
+hello.c:#include <stdio.h>
 EOF
+
+test_expect_success 'grep -W shows no trailing empty lines' '
+	git grep -W stdio >actual &&
+	test_cmp expected actual
+'
 
 test_expect_success 'grep -W with userdiff' '
 	test_when_finished "rm -f .gitattributes" &&
-	git config diff.custom.xfuncname "(printf.*|})$" &&
-	echo "hello.c diff=custom" >.gitattributes &&
-	git grep -W return >actual &&
-	test_cmp expected actual
+	git config diff.custom.xfuncname "^function .*$" &&
+	echo "hello.ps1 diff=custom" >.gitattributes &&
+	git grep -W echo >function-context-userdiff-actual
+'
+
+test_expect_success ' includes preceding comment' '
+	grep "# Say hello" function-context-userdiff-actual
+'
+
+test_expect_success ' includes function line' '
+	grep "=function hello" function-context-userdiff-actual
+'
+
+test_expect_success ' includes matching line' '
+	grep ":  echo" function-context-userdiff-actual
+'
+
+test_expect_success ' includes last line of the function' '
+	grep "} # hello" function-context-userdiff-actual
+'
+
+for threads in $(test_seq 0 10)
+do
+	test_expect_success "grep --threads=$threads & -c grep.threads=$threads" "
+		git grep --threads=$threads . >actual.$threads &&
+		if test $threads -ge 1
+		then
+			test_cmp actual.\$(($threads - 1)) actual.$threads
+		fi &&
+		git -c grep.threads=$threads grep . >actual.$threads &&
+		if test $threads -ge 1
+		then
+			test_cmp actual.\$(($threads - 1)) actual.$threads
+		fi
+	"
+done
+
+test_expect_success !PTHREADS,C_LOCALE_OUTPUT 'grep --threads=N or pack.threads=N warns when no pthreads' '
+	git grep --threads=2 Hello hello_world 2>err &&
+	grep ^warning: err >warnings &&
+	test_line_count = 1 warnings &&
+	grep -F "no threads support, ignoring --threads" err &&
+	git -c grep.threads=2 grep Hello hello_world 2>err &&
+	grep ^warning: err >warnings &&
+	test_line_count = 1 warnings &&
+	grep -F "no threads support, ignoring grep.threads" err &&
+	git -c grep.threads=2 grep --threads=4 Hello hello_world 2>err &&
+	grep ^warning: err >warnings &&
+	test_line_count = 2 warnings &&
+	grep -F "no threads support, ignoring --threads" err &&
+	grep -F "no threads support, ignoring grep.threads" err &&
+	git -c grep.threads=0 grep --threads=0 Hello hello_world 2>err &&
+	test_line_count = 0 err
 '
 
 test_expect_success 'grep from a subdirectory to search wider area (1)' '
@@ -603,12 +872,12 @@ test_expect_success 'outside of git repository' '
 	} >non/expect.full &&
 	echo file2:world >non/expect.sub &&
 	(
-		GIT_CEILING_DIRECTORIES="$(pwd)/non/git" &&
+		GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
 		export GIT_CEILING_DIRECTORIES &&
 		cd non/git &&
 		test_must_fail git grep o &&
 		git grep --no-index o >../actual.full &&
-		test_cmp ../expect.full ../actual.full
+		test_cmp ../expect.full ../actual.full &&
 		cd sub &&
 		test_must_fail git grep o &&
 		git grep --no-index o >../../actual.sub &&
@@ -617,7 +886,7 @@ test_expect_success 'outside of git repository' '
 
 	echo ".*o*" >non/git/.gitignore &&
 	(
-		GIT_CEILING_DIRECTORIES="$(pwd)/non/git" &&
+		GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
 		export GIT_CEILING_DIRECTORIES &&
 		cd non/git &&
 		test_must_fail git grep o &&
@@ -625,10 +894,51 @@ test_expect_success 'outside of git repository' '
 		test_cmp ../expect.full ../actual.full &&
 
 		{
-			echo ".gitignore:.*o*"
+			echo ".gitignore:.*o*" &&
 			cat ../expect.full
 		} >../expect.with.ignored &&
 		git grep --no-index --no-exclude o >../actual.full &&
+		test_cmp ../expect.with.ignored ../actual.full
+	)
+'
+
+test_expect_success 'outside of git repository with fallbackToNoIndex' '
+	rm -fr non &&
+	mkdir -p non/git/sub &&
+	echo hello >non/git/file1 &&
+	echo world >non/git/sub/file2 &&
+	cat <<-\EOF >non/expect.full &&
+	file1:hello
+	sub/file2:world
+	EOF
+	echo file2:world >non/expect.sub &&
+	(
+		GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
+		export GIT_CEILING_DIRECTORIES &&
+		cd non/git &&
+		test_must_fail git -c grep.fallbackToNoIndex=false grep o &&
+		git -c grep.fallbackToNoIndex=true grep o >../actual.full &&
+		test_cmp ../expect.full ../actual.full &&
+		cd sub &&
+		test_must_fail git -c grep.fallbackToNoIndex=false grep o &&
+		git -c grep.fallbackToNoIndex=true grep o >../../actual.sub &&
+		test_cmp ../../expect.sub ../../actual.sub
+	) &&
+
+	echo ".*o*" >non/git/.gitignore &&
+	(
+		GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
+		export GIT_CEILING_DIRECTORIES &&
+		cd non/git &&
+		test_must_fail git -c grep.fallbackToNoIndex=false grep o &&
+		git -c grep.fallbackToNoIndex=true grep --exclude-standard o >../actual.full &&
+		test_cmp ../expect.full ../actual.full &&
+
+		{
+			echo ".gitignore:.*o*" &&
+			cat ../expect.full
+		} >../expect.with.ignored &&
+		git -c grep.fallbackToNoIndex grep --no-exclude o >../actual.full &&
 		test_cmp ../expect.with.ignored ../actual.full
 	)
 '
@@ -676,6 +986,33 @@ test_expect_success 'inside git repository but with --no-index' '
 	)
 '
 
+test_expect_success 'grep --no-index descends into repos, but not .git' '
+	rm -fr non &&
+	mkdir -p non/git &&
+	(
+		GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
+		export GIT_CEILING_DIRECTORIES &&
+		cd non/git &&
+
+		echo magic >file &&
+		git init repo &&
+		(
+			cd repo &&
+			echo magic >file &&
+			git add file &&
+			git commit -m foo &&
+			echo magic >.git/file
+		) &&
+
+		cat >expect <<-\EOF &&
+		file
+		repo/file
+		EOF
+		git grep -l --no-index magic >actual &&
+		test_cmp expect actual
+	)
+'
+
 test_expect_success 'setup double-dash tests' '
 cat >double-dash <<EOF &&
 --
@@ -709,19 +1046,99 @@ test_expect_success 'grep -e -- -- path' '
 	test_cmp expected actual
 '
 
+test_expect_success 'dashdash disambiguates rev as rev' '
+	test_when_finished "rm -f master" &&
+	echo content >master &&
+	echo master:hello.c >expect &&
+	git grep -l o master -- hello.c >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'dashdash disambiguates pathspec as pathspec' '
+	test_when_finished "git rm -f master" &&
+	echo content >master &&
+	git add master &&
+	echo master:content >expect &&
+	git grep o -- master >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'report bogus arg without dashdash' '
+	test_must_fail git grep o does-not-exist
+'
+
+test_expect_success 'report bogus rev with dashdash' '
+	test_must_fail git grep o hello.c --
+'
+
+test_expect_success 'allow non-existent path with dashdash' '
+	# We need a real match so grep exits with success.
+	tree=$(git ls-tree HEAD |
+	       sed s/hello.c/not-in-working-tree/ |
+	       git mktree) &&
+	git grep o "$tree" -- not-in-working-tree
+'
+
+test_expect_success 'grep --no-index pattern -- path' '
+	rm -fr non &&
+	mkdir -p non/git &&
+	(
+		GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
+		export GIT_CEILING_DIRECTORIES &&
+		cd non/git &&
+		echo hello >hello &&
+		echo goodbye >goodbye &&
+		echo hello:hello >expect &&
+		git grep --no-index o -- hello >actual &&
+		test_cmp expect actual
+	)
+'
+
+test_expect_success 'grep --no-index complains of revs' '
+	test_must_fail git grep --no-index o master -- 2>err &&
+	test_i18ngrep "cannot be used with revs" err
+'
+
+test_expect_success 'grep --no-index prefers paths to revs' '
+	test_when_finished "rm -f master" &&
+	echo content >master &&
+	echo master:content >expect &&
+	git grep --no-index o master >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'grep --no-index does not "diagnose" revs' '
+	test_must_fail git grep --no-index o :1:hello.c 2>err &&
+	test_i18ngrep ! -i "did you mean" err
+'
+
 cat >expected <<EOF
 hello.c:int main(int argc, const char **argv)
 hello.c:	printf("Hello world.\n");
 EOF
 
-test_expect_success LIBPCRE 'grep --perl-regexp pattern' '
+test_expect_success PCRE 'grep --perl-regexp pattern' '
 	git grep --perl-regexp "\p{Ps}.*?\p{Pe}" hello.c >actual &&
 	test_cmp expected actual
 '
 
-test_expect_success LIBPCRE 'grep -P pattern' '
+test_expect_success !PCRE 'grep --perl-regexp pattern errors without PCRE' '
+	test_must_fail git grep --perl-regexp "foo.*bar"
+'
+
+test_expect_success PCRE 'grep -P pattern' '
 	git grep -P "\p{Ps}.*?\p{Pe}" hello.c >actual &&
 	test_cmp expected actual
+'
+
+test_expect_success LIBPCRE2 "grep -P with (*NO_JIT) doesn't error out" '
+	git grep -P "(*NO_JIT)\p{Ps}.*?\p{Pe}" hello.c >actual &&
+	test_cmp expected actual
+
+'
+
+test_expect_success !PCRE 'grep -P pattern errors without PCRE' '
+	test_must_fail git grep -P "foo.*bar"
 '
 
 test_expect_success 'grep pattern with grep.extendedRegexp=true' '
@@ -731,13 +1148,13 @@ test_expect_success 'grep pattern with grep.extendedRegexp=true' '
 	test_cmp empty actual
 '
 
-test_expect_success LIBPCRE 'grep -P pattern with grep.extendedRegexp=true' '
+test_expect_success PCRE 'grep -P pattern with grep.extendedRegexp=true' '
 	git -c grep.extendedregexp=true \
 		grep -P "\p{Ps}.*?\p{Pe}" hello.c >actual &&
 	test_cmp expected actual
 '
 
-test_expect_success LIBPCRE 'grep -P -v pattern' '
+test_expect_success PCRE 'grep -P -v pattern' '
 	{
 		echo "ab:a+b*c"
 		echo "ab:a+bc"
@@ -746,7 +1163,7 @@ test_expect_success LIBPCRE 'grep -P -v pattern' '
 	test_cmp expected actual
 '
 
-test_expect_success LIBPCRE 'grep -P -i pattern' '
+test_expect_success PCRE 'grep -P -i pattern' '
 	cat >expected <<-EOF &&
 	hello.c:	printf("Hello world.\n");
 	EOF
@@ -754,7 +1171,7 @@ test_expect_success LIBPCRE 'grep -P -i pattern' '
 	test_cmp expected actual
 '
 
-test_expect_success LIBPCRE 'grep -P -w pattern' '
+test_expect_success PCRE 'grep -P -w pattern' '
 	{
 		echo "hello_world:Hello world"
 		echo "hello_world:HeLLo world"
@@ -763,21 +1180,50 @@ test_expect_success LIBPCRE 'grep -P -w pattern' '
 	test_cmp expected actual
 '
 
+test_expect_success PCRE 'grep -P backreferences work (the PCRE NO_AUTO_CAPTURE flag is not set)' '
+	git grep -P -h "(?P<one>.)(?P=one)" hello_world >actual &&
+	test_cmp hello_world actual &&
+	git grep -P -h "(.)\1" hello_world >actual &&
+	test_cmp hello_world actual
+'
+
 test_expect_success 'grep -G invalidpattern properly dies ' '
 	test_must_fail git grep -G "a["
+'
+
+test_expect_success 'grep invalidpattern properly dies with grep.patternType=basic' '
+	test_must_fail git -c grep.patterntype=basic grep "a["
 '
 
 test_expect_success 'grep -E invalidpattern properly dies ' '
 	test_must_fail git grep -E "a["
 '
 
-test_expect_success LIBPCRE 'grep -P invalidpattern properly dies ' '
+test_expect_success 'grep invalidpattern properly dies with grep.patternType=extended' '
+	test_must_fail git -c grep.patterntype=extended grep "a["
+'
+
+test_expect_success PCRE 'grep -P invalidpattern properly dies ' '
 	test_must_fail git grep -P "a["
+'
+
+test_expect_success PCRE 'grep invalidpattern properly dies with grep.patternType=perl' '
+	test_must_fail git -c grep.patterntype=perl grep "a["
 '
 
 test_expect_success 'grep -G -E -F pattern' '
 	echo "ab:a+b*c" >expected &&
 	git grep -G -E -F "a+b*c" ab >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'grep pattern with grep.patternType=basic, =extended, =fixed' '
+	echo "ab:a+b*c" >expected &&
+	git \
+		-c grep.patterntype=basic \
+		-c grep.patterntype=extended \
+		-c grep.patterntype=fixed \
+		grep "a+b*c" ab >actual &&
 	test_cmp expected actual
 '
 
@@ -787,28 +1233,104 @@ test_expect_success 'grep -E -F -G pattern' '
 	test_cmp expected actual
 '
 
+test_expect_success 'grep pattern with grep.patternType=extended, =fixed, =basic' '
+	echo "ab:a+bc" >expected &&
+	git \
+		-c grep.patterntype=extended \
+		-c grep.patterntype=fixed \
+		-c grep.patterntype=basic \
+		grep "a+b*c" ab >actual &&
+	test_cmp expected actual
+'
+
 test_expect_success 'grep -F -G -E pattern' '
 	echo "ab:abc" >expected &&
 	git grep -F -G -E "a+b*c" ab >actual &&
 	test_cmp expected actual
 '
 
-test_expect_success 'grep -G -F -P -E pattern' '
-	>empty &&
-	test_must_fail git grep -G -F -P -E "a\x{2b}b\x{2a}c" ab >actual &&
-	test_cmp empty actual
-'
-
-test_expect_success LIBPCRE 'grep -G -F -E -P pattern' '
-	echo "ab:a+b*c" >expected &&
-	git grep -G -F -E -P "a\x{2b}b\x{2a}c" ab >actual &&
+test_expect_success 'grep pattern with grep.patternType=fixed, =basic, =extended' '
+	echo "ab:abc" >expected &&
+	git \
+		-c grep.patterntype=fixed \
+		-c grep.patterntype=basic \
+		-c grep.patterntype=extended \
+		grep "a+b*c" ab >actual &&
 	test_cmp expected actual
 '
 
-test_config() {
-	git config "$1" "$2" &&
-	test_when_finished "git config --unset $1"
-}
+test_expect_success 'grep -G -F -P -E pattern' '
+	echo "d0:d" >expected &&
+	git grep -G -F -P -E "[\d]" d0 >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'grep pattern with grep.patternType=fixed, =basic, =perl, =extended' '
+	echo "d0:d" >expected &&
+	git \
+		-c grep.patterntype=fixed \
+		-c grep.patterntype=basic \
+		-c grep.patterntype=perl \
+		-c grep.patterntype=extended \
+		grep "[\d]" d0 >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success PCRE 'grep -G -F -E -P pattern' '
+	echo "d0:0" >expected &&
+	git grep -G -F -E -P "[\d]" d0 >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success PCRE 'grep pattern with grep.patternType=fixed, =basic, =extended, =perl' '
+	echo "d0:0" >expected &&
+	git \
+		-c grep.patterntype=fixed \
+		-c grep.patterntype=basic \
+		-c grep.patterntype=extended \
+		-c grep.patterntype=perl \
+		grep "[\d]" d0 >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success PCRE 'grep -P pattern with grep.patternType=fixed' '
+	echo "ab:a+b*c" >expected &&
+	git \
+		-c grep.patterntype=fixed \
+		grep -P "a\x{2b}b\x{2a}c" ab >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'grep -F pattern with grep.patternType=basic' '
+	echo "ab:a+b*c" >expected &&
+	git \
+		-c grep.patterntype=basic \
+		grep -F "*c" ab >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'grep -G pattern with grep.patternType=fixed' '
+	{
+		echo "ab:a+b*c"
+		echo "ab:a+bc"
+	} >expected &&
+	git \
+		-c grep.patterntype=fixed \
+		grep -G "a+b" ab >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'grep -E pattern with grep.patternType=fixed' '
+	{
+		echo "ab:a+b*c"
+		echo "ab:a+bc"
+		echo "ab:abc"
+	} >expected &&
+	git \
+		-c grep.patterntype=fixed \
+		grep -E "a+" ab >actual &&
+	test_cmp expected actual
+'
 
 cat >expected <<EOF
 hello.c<RED>:<RESET>int main(int argc, const char **argv)
@@ -878,8 +1400,8 @@ test_expect_success 'grep --heading' '
 
 cat >expected <<EOF
 <BOLD;GREEN>hello.c<RESET>
-2:int main(int argc, const <BLACK;BYELLOW>char<RESET> **argv)
-6:	/* <BLACK;BYELLOW>char<RESET> ?? */
+4:int main(int argc, const <BLACK;BYELLOW>char<RESET> **argv)
+8:	/* <BLACK;BYELLOW>char<RESET> ?? */
 
 <BOLD;GREEN>hello_world<RESET>
 3:Hel<BLACK;BYELLOW>lo_w<RESET>orld
@@ -906,13 +1428,165 @@ space: line with leading space2
 space: line with leading space3
 EOF
 
-test_expect_success LIBPCRE 'grep -E "^ "' '
+test_expect_success PCRE 'grep -E "^ "' '
 	git grep -E "^ " space >actual &&
 	test_cmp expected actual
 '
 
-test_expect_success LIBPCRE 'grep -P "^ "' '
+test_expect_success PCRE 'grep -P "^ "' '
 	git grep -P "^ " space >actual &&
+	test_cmp expected actual
+'
+
+cat >expected <<EOF
+space-line without leading space1
+space: line <RED>with <RESET>leading space1
+space: line <RED>with <RESET>leading <RED>space2<RESET>
+space: line <RED>with <RESET>leading space3
+space:line without leading <RED>space2<RESET>
+EOF
+
+test_expect_success 'grep --color -e A -e B with context' '
+	test_config color.grep.context		normal &&
+	test_config color.grep.filename		normal &&
+	test_config color.grep.function		normal &&
+	test_config color.grep.linenumber	normal &&
+	test_config color.grep.matchContext	normal &&
+	test_config color.grep.matchSelected	red &&
+	test_config color.grep.selected		normal &&
+	test_config color.grep.separator	normal &&
+
+	git grep --color=always -C2 -e "with " -e space2  space |
+	test_decode_color >actual &&
+	test_cmp expected actual
+'
+
+cat >expected <<EOF
+space-line without leading space1
+space- line with leading space1
+space: line <RED>with <RESET>leading <RED>space2<RESET>
+space- line with leading space3
+space-line without leading space2
+EOF
+
+test_expect_success 'grep --color -e A --and -e B with context' '
+	test_config color.grep.context		normal &&
+	test_config color.grep.filename		normal &&
+	test_config color.grep.function		normal &&
+	test_config color.grep.linenumber	normal &&
+	test_config color.grep.matchContext	normal &&
+	test_config color.grep.matchSelected	red &&
+	test_config color.grep.selected		normal &&
+	test_config color.grep.separator	normal &&
+
+	git grep --color=always -C2 -e "with " --and -e space2  space |
+	test_decode_color >actual &&
+	test_cmp expected actual
+'
+
+cat >expected <<EOF
+space-line without leading space1
+space: line <RED>with <RESET>leading space1
+space- line with leading space2
+space: line <RED>with <RESET>leading space3
+space-line without leading space2
+EOF
+
+test_expect_success 'grep --color -e A --and --not -e B with context' '
+	test_config color.grep.context		normal &&
+	test_config color.grep.filename		normal &&
+	test_config color.grep.function		normal &&
+	test_config color.grep.linenumber	normal &&
+	test_config color.grep.matchContext	normal &&
+	test_config color.grep.matchSelected	red &&
+	test_config color.grep.selected		normal &&
+	test_config color.grep.separator	normal &&
+
+	git grep --color=always -C2 -e "with " --and --not -e space2  space |
+	test_decode_color >actual &&
+	test_cmp expected actual
+'
+
+cat >expected <<EOF
+hello.c-
+hello.c=int main(int argc, const char **argv)
+hello.c-{
+hello.c:	pr<RED>int<RESET>f("<RED>Hello<RESET> world.\n");
+hello.c-	return 0;
+hello.c-	/* char ?? */
+hello.c-}
+EOF
+
+test_expect_success 'grep --color -e A --and -e B -p with context' '
+	test_config color.grep.context		normal &&
+	test_config color.grep.filename		normal &&
+	test_config color.grep.function		normal &&
+	test_config color.grep.linenumber	normal &&
+	test_config color.grep.matchContext	normal &&
+	test_config color.grep.matchSelected	red &&
+	test_config color.grep.selected		normal &&
+	test_config color.grep.separator	normal &&
+
+	git grep --color=always -p -C3 -e int --and -e Hello --no-index hello.c |
+	test_decode_color >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'grep can find things only in the work tree' '
+	: >work-tree-only &&
+	git add work-tree-only &&
+	test_when_finished "git rm -f work-tree-only" &&
+	echo "find in work tree" >work-tree-only &&
+	git grep --quiet "find in work tree" &&
+	test_must_fail git grep --quiet --cached "find in work tree" &&
+	test_must_fail git grep --quiet "find in work tree" HEAD
+'
+
+test_expect_success 'grep can find things only in the work tree (i-t-a)' '
+	echo "intend to add this" >intend-to-add &&
+	git add -N intend-to-add &&
+	test_when_finished "git rm -f intend-to-add" &&
+	git grep --quiet "intend to add this" &&
+	test_must_fail git grep --quiet --cached "intend to add this" &&
+	test_must_fail git grep --quiet "intend to add this" HEAD
+'
+
+test_expect_success 'grep does not search work tree with assume unchanged' '
+	echo "intend to add this" >intend-to-add &&
+	git add -N intend-to-add &&
+	git update-index --assume-unchanged intend-to-add &&
+	test_when_finished "git rm -f intend-to-add" &&
+	test_must_fail git grep --quiet "intend to add this" &&
+	test_must_fail git grep --quiet --cached "intend to add this" &&
+	test_must_fail git grep --quiet "intend to add this" HEAD
+'
+
+test_expect_success 'grep can find things only in the index' '
+	echo "only in the index" >cache-this &&
+	git add cache-this &&
+	rm cache-this &&
+	test_when_finished "git rm --cached cache-this" &&
+	test_must_fail git grep --quiet "only in the index" &&
+	git grep --quiet --cached "only in the index" &&
+	test_must_fail git grep --quiet "only in the index" HEAD
+'
+
+test_expect_success 'grep does not report i-t-a with -L --cached' '
+	echo "intend to add this" >intend-to-add &&
+	git add -N intend-to-add &&
+	test_when_finished "git rm -f intend-to-add" &&
+	git ls-files | grep -v "^intend-to-add\$" >expected &&
+	git grep -L --cached "nonexistent_string" >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'grep does not report i-t-a and assume unchanged with -L' '
+	echo "intend to add this" >intend-to-add-assume-unchanged &&
+	git add -N intend-to-add-assume-unchanged &&
+	test_when_finished "git rm -f intend-to-add-assume-unchanged" &&
+	git update-index --assume-unchanged intend-to-add-assume-unchanged &&
+	git ls-files | grep -v "^intend-to-add-assume-unchanged\$" >expected &&
+	git grep -L "nonexistent_string" >actual &&
 	test_cmp expected actual
 '
 

@@ -5,7 +5,6 @@
 test_description='Test export of commits to CVS'
 
 . ./test-lib.sh
-. "$TEST_DIRECTORY"/lib-prereq-FILEMODE.sh
 
 if ! test_have_prereq PERL; then
 	skip_all='skipping git cvsexportcommit tests, perl not available'
@@ -19,14 +18,20 @@ then
     test_done
 fi
 
-CVSROOT=$PWD/cvsroot
+if ! test_have_prereq NOT_ROOT; then
+	skip_all='When cvs is compiled with CVS_BADROOT commits as root fail'
+	test_done
+fi
+
+CVSROOT=$PWD/tmpcvsroot
 CVSWORK=$PWD/cvswork
 GIT_DIR=$PWD/.git
 export CVSROOT CVSWORK GIT_DIR
 
 rm -rf "$CVSROOT" "$CVSWORK"
-mkdir "$CVSROOT" &&
+
 cvs init &&
+test -d "$CVSROOT" &&
 cvs -Q co -d "$CVSWORK" . &&
 echo >empty &&
 git add empty &&
@@ -35,7 +40,7 @@ exit 1
 
 check_entries () {
 	# $1 == directory, $2 == expected
-	grep '^/' "$1/CVS/Entries" | sort | cut -d/ -f2,3,5 >actual
+	sed -ne '/^\//p' "$1/CVS/Entries" | sort | cut -d/ -f2,3,5 >actual
 	if test -z "$2"
 	then
 		>expected
@@ -197,7 +202,7 @@ if p="Å/goo/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/å/ä/ö" &&
 then
 
 # This test contains UTF-8 characters
-test_expect_success \
+test_expect_success !MINGW \
      'File with non-ascii file name' \
      'mkdir -p Å/goo/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/å/ä/ö &&
       echo Foo >Å/goo/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/å/ä/ö/gårdetsågårdet.txt &&

@@ -3,6 +3,7 @@
  */
 #include "cache.h"
 #include "streaming.h"
+#include "packfile.h"
 
 enum input_source {
 	stream_error = -1,
@@ -99,7 +100,7 @@ int close_istream(struct git_istream *st)
 	return r;
 }
 
-ssize_t read_istream(struct git_istream *st, char *buf, size_t sz)
+ssize_t read_istream(struct git_istream *st, void *buf, size_t sz)
 {
 	return st->vtbl->read(st, buf, sz);
 }
@@ -111,17 +112,17 @@ static enum input_source istream_source(const unsigned char *sha1,
 	unsigned long size;
 	int status;
 
+	oi->typep = type;
 	oi->sizep = &size;
-	status = sha1_object_info_extended(sha1, oi);
+	status = sha1_object_info_extended(sha1, oi, 0);
 	if (status < 0)
 		return stream_error;
-	*type = status;
 
 	switch (oi->whence) {
 	case OI_LOOSE:
 		return loose;
 	case OI_PACKED:
-		if (!oi->u.packed.is_delta && big_file_threshold <= size)
+		if (!oi->u.packed.is_delta && big_file_threshold < size)
 			return pack_non_delta;
 		/* fallthru */
 	default:
@@ -135,7 +136,7 @@ struct git_istream *open_istream(const unsigned char *sha1,
 				 struct stream_filter *filter)
 {
 	struct git_istream *st;
-	struct object_info oi;
+	struct object_info oi = OBJECT_INFO_INIT;
 	const unsigned char *real = lookup_replace_object(sha1);
 	enum input_source src = istream_source(real, type, &oi);
 
@@ -149,11 +150,13 @@ struct git_istream *open_istream(const unsigned char *sha1,
 			return NULL;
 		}
 	}
-	if (st && filter) {
+	if (filter) {
 		/* Add "&& !is_null_stream_filter(filter)" for performance */
 		struct git_istream *nst = attach_stream_filter(st, filter);
-		if (!nst)
+		if (!nst) {
 			close_istream(st);
+			return NULL;
+		}
 		st = nst;
 	}
 
@@ -237,7 +240,7 @@ static read_method_decl(filtered)
 		if (!fs->input_finished) {
 			fs->i_end = read_istream(fs->upstream, fs->ibuf, FILTER_BUFFER);
 			if (fs->i_end < 0)
-				break;
+				return -1;
 			if (fs->i_end)
 				continue;
 		}
@@ -309,7 +312,7 @@ static read_method_decl(loose)
 			st->z_state = z_done;
 			break;
 		}
-		if (status != Z_OK && status != Z_BUF_ERROR) {
+		if (status != Z_OK && (status != Z_BUF_ERROR || total_read < sz)) {
 			git_inflate_end(&st->z);
 			st->z_state = z_error;
 			return -1;
@@ -335,17 +338,17 @@ static open_method_decl(loose)
 	st->u.loose.mapped = map_sha1_file(sha1, &st->u.loose.mapsize);
 	if (!st->u.loose.mapped)
 		return -1;
-	if (unpack_sha1_header(&st->z,
-			       st->u.loose.mapped,
-			       st->u.loose.mapsize,
-			       st->u.loose.hdr,
-			       sizeof(st->u.loose.hdr)) < 0) {
+	if ((unpack_sha1_header(&st->z,
+				st->u.loose.mapped,
+				st->u.loose.mapsize,
+				st->u.loose.hdr,
+				sizeof(st->u.loose.hdr)) < 0) ||
+	    (parse_sha1_header(st->u.loose.hdr, &st->size) < 0)) {
 		git_inflate_end(&st->z);
 		munmap(st->u.loose.mapped, st->u.loose.mapsize);
 		return -1;
 	}
 
-	parse_sha1_header(st->u.loose.hdr, &st->size);
 	st->u.loose.hdr_used = strlen(st->u.loose.hdr) + 1;
 	st->u.loose.hdr_avail = st->z.total_out;
 	st->z_state = z_used;
@@ -488,4 +491,64 @@ static open_method_decl(incore)
 	st->vtbl = &incore_vtbl;
 
 	return st->u.incore.buf ? 0 : -1;
+}
+
+
+/****************************************************************
+ * Users of streaming interface
+ ****************************************************************/
+
+int stream_blob_to_fd(int fd, const struct object_id *oid, struct stream_filter *filter,
+		      int can_seek)
+{
+	struct git_istream *st;
+	enum object_type type;
+	unsigned long sz;
+	ssize_t kept = 0;
+	int result = -1;
+
+	st = open_istream(oid->hash, &type, &sz, filter);
+	if (!st) {
+		if (filter)
+			free_stream_filter(filter);
+		return result;
+	}
+	if (type != OBJ_BLOB)
+		goto close_and_exit;
+	for (;;) {
+		char buf[1024 * 16];
+		ssize_t wrote, holeto;
+		ssize_t readlen = read_istream(st, buf, sizeof(buf));
+
+		if (readlen < 0)
+			goto close_and_exit;
+		if (!readlen)
+			break;
+		if (can_seek && sizeof(buf) == readlen) {
+			for (holeto = 0; holeto < readlen; holeto++)
+				if (buf[holeto])
+					break;
+			if (readlen == holeto) {
+				kept += holeto;
+				continue;
+			}
+		}
+
+		if (kept && lseek(fd, kept, SEEK_CUR) == (off_t) -1)
+			goto close_and_exit;
+		else
+			kept = 0;
+		wrote = write_in_full(fd, buf, readlen);
+
+		if (wrote < 0)
+			goto close_and_exit;
+	}
+	if (kept && (lseek(fd, kept - 1, SEEK_CUR) == (off_t) -1 ||
+		     xwrite(fd, "", 1) != 1))
+		goto close_and_exit;
+	result = 0;
+
+ close_and_exit:
+	close_istream(st);
+	return result;
 }

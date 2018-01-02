@@ -13,9 +13,9 @@ commit_msg_is () {
 	expect=commit_msg_is.expect
 	actual=commit_msg_is.actual
 
-	printf "%s" "$(git log --pretty=format:%s%b -1)" >$expect &&
-	printf "%s" "$1" >$actual &&
-	test_i18ncmp $expect $actual
+	printf "%s" "$(git log --pretty=format:%s%b -1)" >"$actual" &&
+	printf "%s" "$1" >"$expect" &&
+	test_i18ncmp "$expect" "$actual"
 }
 
 # A sanity check to see if commit is working at all.
@@ -36,8 +36,7 @@ test_expect_success 'nonexistent template file should return error' '
 '
 
 test_expect_success 'nonexistent template file in config should return error' '
-	git config commit.template "$PWD"/notexist &&
-	test_when_finished "git config --unset commit.template" &&
+	test_config commit.template "$PWD"/notexist &&
 	(
 		GIT_EDITOR="echo hello >\"\$1\"" &&
 		export GIT_EDITOR &&
@@ -93,14 +92,13 @@ test_expect_success '-t option should be short for --template' '
 
 test_expect_success 'config-specified template should commit' '
 	echo "new template" > "$TEMPLATE" &&
-	git config commit.template "$TEMPLATE" &&
+	test_config commit.template "$TEMPLATE" &&
 	echo "more content" >> foo &&
 	git add foo &&
 	(
 		test_set_editor "$TEST_DIRECTORY"/t7500/add-content &&
 		git commit
 	) &&
-	git config --unset commit.template &&
 	commit_msg_is "new templatecommit message"
 '
 
@@ -225,7 +223,8 @@ test_expect_success 'Commit without message is allowed with --allow-empty-messag
 	git add foo &&
 	>empty &&
 	git commit --allow-empty-message <empty &&
-	commit_msg_is ""
+	commit_msg_is "" &&
+	git tag empty-message-commit
 '
 
 test_expect_success 'Commit without message is no-no without --allow-empty-message' '
@@ -240,6 +239,14 @@ test_expect_success 'Commit a message with --allow-empty-message' '
 	git add foo &&
 	git commit --allow-empty-message -m"hello there" &&
 	commit_msg_is "hello there"
+'
+
+test_expect_success 'commit -C empty respects --allow-empty-message' '
+	echo more >>foo &&
+	git add foo &&
+	test_must_fail git commit -C empty-message-commit &&
+	git commit -C empty-message-commit --allow-empty-message &&
+	commit_msg_is ""
 '
 
 commit_for_rebase_autosquash_setup () {
@@ -320,6 +327,29 @@ test_expect_success 'invalid message options when using --fixup' '
 	test_must_fail git commit --fixup HEAD~1 -c HEAD~2 &&
 	test_must_fail git commit --fixup HEAD~1 -m "cmdline message" &&
 	test_must_fail git commit --fixup HEAD~1 -F log
+'
+
+cat >expected-template <<EOF
+
+# Please enter the commit message for your changes. Lines starting
+# with '#' will be ignored, and an empty message aborts the commit.
+#
+# Author:    A U Thor <author@example.com>
+#
+# On branch commit-template-check
+# Changes to be committed:
+#	new file:   commit-template-check
+#
+# Untracked files not listed
+EOF
+
+test_expect_success 'new line found before status message in commit template' '
+	git checkout -b commit-template-check &&
+	git reset --hard HEAD &&
+	touch commit-template-check &&
+	git add commit-template-check &&
+	GIT_EDITOR="cat >editor-input" git commit --untracked-files=no --allow-empty-message &&
+	test_i18ncmp expected-template editor-input
 '
 
 test_done

@@ -1,6 +1,6 @@
 #include "cache.h"
+#include "config.h"
 #include "userdiff.h"
-#include "cache.h"
 #include "attr.h"
 
 static struct userdiff_driver *drivers;
@@ -14,6 +14,15 @@ static int drivers_alloc;
 	{ name, NULL, -1, { pattern, REG_EXTENDED | REG_ICASE }, \
 	  word_regex "|[^[:space:]]|[\xc0-\xff][\x80-\xbf]+" }
 static struct userdiff_driver builtin_drivers[] = {
+IPATTERN("ada",
+	 "!^(.*[ \t])?(is[ \t]+new|renames|is[ \t]+separate)([ \t].*)?$\n"
+	 "!^[ \t]*with[ \t].*$\n"
+	 "^[ \t]*((procedure|function)[ \t]+.*)$\n"
+	 "^[ \t]*((package|protected|task)[ \t]+.*)$",
+	 /* -- */
+	 "[a-zA-Z][a-zA-Z0-9_]*"
+	 "|[-+]?[0-9][0-9#_.aAbBcCdDeEfF]*([eE][+-]?[0-9_]+)?"
+	 "|=>|\\.\\.|\\*\\*|:=|/=|>=|<=|<<|>>|<>"),
 IPATTERN("fortran",
 	 "!^([C*]|[ \t]*!)\n"
 	 "!^[ \t]*MODULE[ \t]+PROCEDURE[ \t]\n"
@@ -27,7 +36,9 @@ IPATTERN("fortran",
 	  * they would have been matched above as a variable anyway. */
 	 "|[-+]?[0-9.]+([AaIiDdEeFfLlTtXx][Ss]?[-+]?[0-9.]*)?(_[a-zA-Z0-9][a-zA-Z0-9_]*)?"
 	 "|//|\\*\\*|::|[/<>=]="),
-PATTERNS("html", "^[ \t]*(<[Hh][1-6][ \t].*>.*)$",
+IPATTERN("fountain", "^((\\.[^.]|(int|ext|est|int\\.?/ext|i/e)[. ]).*)$",
+	 "[^ \t-]+"),
+PATTERNS("html", "^[ \t]*(<[Hh][1-6]([ \t].*)?>.*)$",
 	 "[^<>= \t]+"),
 PATTERNS("java",
 	 "!^[ \t]*(catch|do|for|if|instanceof|new|return|switch|throw|while)\n"
@@ -116,15 +127,13 @@ PATTERNS("tex", "^(\\\\((sub)*section|chapter|part)\\*{0,1}\\{.*)$",
 	 "\\\\[a-zA-Z@]+|\\\\.|[a-zA-Z0-9\x80-\xff]+"),
 PATTERNS("cpp",
 	 /* Jump targets or access declarations */
-	 "!^[ \t]*[A-Za-z_][A-Za-z_0-9]*:.*$\n"
-	 /* C/++ functions/methods at top level */
-	 "^([A-Za-z_][A-Za-z_0-9]*([ \t*]+[A-Za-z_][A-Za-z_0-9]*([ \t]*::[ \t]*[^[:space:]]+)?){1,}[ \t]*\\([^;]*)$\n"
-	 /* compound type at top level */
-	 "^((struct|class|enum)[^;]*)$",
+	 "!^[ \t]*[A-Za-z_][A-Za-z_0-9]*:[[:space:]]*($|/[/*])\n"
+	 /* functions/methods, variables, and compounds at top level */
+	 "^((::[[:space:]]*)?[A-Za-z_].*)$",
 	 /* -- */
 	 "[a-zA-Z_][a-zA-Z0-9_]*"
-	 "|[-+0-9.e]+[fFlL]?|0[xXbB]?[0-9a-fA-F]+[lL]?"
-	 "|[-+*/<>%&^|=!]=|--|\\+\\+|<<=?|>>=?|&&|\\|\\||::|->"),
+	 "|[-+0-9.e]+[fFlL]?|0[xXbB]?[0-9a-fA-F]+[lLuU]*"
+	 "|[-+*/<>%&^|=!]=|--|\\+\\+|<<=?|>>=?|&&|\\|\\||::|->\\*?|\\.\\*"),
 PATTERNS("csharp",
 	 /* Keywords */
 	 "!^[ \t]*(do|while|for|if|else|instanceof|new|return|switch|case|throw|catch|using)\n"
@@ -140,6 +149,18 @@ PATTERNS("csharp",
 	 "[a-zA-Z_][a-zA-Z0-9_]*"
 	 "|[-+0-9.e]+[fFlL]?|0[xXbB]?[0-9a-fA-F]+[lL]?"
 	 "|[-+*/<>%&^|=!]=|--|\\+\\+|<<=?|>>=?|&&|\\|\\||::|->"),
+IPATTERN("css",
+	 "![:;][[:space:]]*$\n"
+	 "^[_a-z0-9].*$",
+	 /* -- */
+	 /*
+	  * This regex comes from W3C CSS specs. Should theoretically also
+	  * allow ISO 10646 characters U+00A0 and higher,
+	  * but they are not handled in this regex.
+	  */
+	 "-?[_a-zA-Z][-_a-zA-Z0-9]*" /* identifiers */
+	 "|-?[0-9]+|\\#[0-9a-fA-F]+" /* numbers */
+),
 { "default", NULL, -1, { NULL, 0 } },
 };
 #undef PATTERNS
@@ -175,35 +196,6 @@ static struct userdiff_driver *userdiff_find_by_namelen(const char *k, int len)
 	return NULL;
 }
 
-static struct userdiff_driver *parse_driver(const char *var,
-		const char *value, const char *type)
-{
-	struct userdiff_driver *drv;
-	const char *dot;
-	const char *name;
-	int namelen;
-
-	if (prefixcmp(var, "diff."))
-		return NULL;
-	dot = strrchr(var, '.');
-	if (dot == var + 4)
-		return NULL;
-	if (strcmp(type, dot+1))
-		return NULL;
-
-	name = var + 5;
-	namelen = dot - name;
-	drv = userdiff_find_by_namelen(name, namelen);
-	if (!drv) {
-		ALLOC_GROW(drivers, ndrivers+1, drivers_alloc);
-		drv = &drivers[ndrivers++];
-		memset(drv, 0, sizeof(*drv));
-		drv->name = xmemdupz(name, namelen);
-		drv->binary = -1;
-	}
-	return drv;
-}
-
 static int parse_funcname(struct userdiff_funcname *f, const char *k,
 		const char *v, int cflags)
 {
@@ -231,20 +223,34 @@ static int parse_bool(int *b, const char *k, const char *v)
 int userdiff_config(const char *k, const char *v)
 {
 	struct userdiff_driver *drv;
+	const char *name, *type;
+	int namelen;
 
-	if ((drv = parse_driver(k, v, "funcname")))
+	if (parse_config_key(k, "diff", &name, &namelen, &type) || !name)
+		return 0;
+
+	drv = userdiff_find_by_namelen(name, namelen);
+	if (!drv) {
+		ALLOC_GROW(drivers, ndrivers+1, drivers_alloc);
+		drv = &drivers[ndrivers++];
+		memset(drv, 0, sizeof(*drv));
+		drv->name = xmemdupz(name, namelen);
+		drv->binary = -1;
+	}
+
+	if (!strcmp(type, "funcname"))
 		return parse_funcname(&drv->funcname, k, v, 0);
-	if ((drv = parse_driver(k, v, "xfuncname")))
+	if (!strcmp(type, "xfuncname"))
 		return parse_funcname(&drv->funcname, k, v, REG_EXTENDED);
-	if ((drv = parse_driver(k, v, "binary")))
+	if (!strcmp(type, "binary"))
 		return parse_tristate(&drv->binary, k, v);
-	if ((drv = parse_driver(k, v, "command")))
+	if (!strcmp(type, "command"))
 		return git_config_string(&drv->external, k, v);
-	if ((drv = parse_driver(k, v, "textconv")))
+	if (!strcmp(type, "textconv"))
 		return git_config_string(&drv->textconv, k, v);
-	if ((drv = parse_driver(k, v, "cachetextconv")))
+	if (!strcmp(type, "cachetextconv"))
 		return parse_bool(&drv->textconv_want_cache, k, v);
-	if ((drv = parse_driver(k, v, "wordregex")))
+	if (!strcmp(type, "wordregex"))
 		return git_config_string(&drv->word_regex, k, v);
 
 	return 0;
@@ -257,25 +263,22 @@ struct userdiff_driver *userdiff_find_by_name(const char *name) {
 
 struct userdiff_driver *userdiff_find_by_path(const char *path)
 {
-	static struct git_attr *attr;
-	struct git_attr_check check;
+	static struct attr_check *check;
 
-	if (!attr)
-		attr = git_attr("diff");
-	check.attr = attr;
-
+	if (!check)
+		check = attr_check_initl("diff", NULL);
 	if (!path)
 		return NULL;
-	if (git_check_attr(path, 1, &check))
+	if (git_check_attr(path, check))
 		return NULL;
 
-	if (ATTR_TRUE(check.value))
+	if (ATTR_TRUE(check->items[0].value))
 		return &driver_true;
-	if (ATTR_FALSE(check.value))
+	if (ATTR_FALSE(check->items[0].value))
 		return &driver_false;
-	if (ATTR_UNSET(check.value))
+	if (ATTR_UNSET(check->items[0].value))
 		return NULL;
-	return userdiff_find_by_name(check.value);
+	return userdiff_find_by_name(check->items[0].value);
 }
 
 struct userdiff_driver *userdiff_get_textconv(struct userdiff_driver *driver)
@@ -290,6 +293,7 @@ struct userdiff_driver *userdiff_get_textconv(struct userdiff_driver *driver)
 		strbuf_addf(&name, "textconv/%s", driver->name);
 		notes_cache_init(c, name.buf, driver->textconv);
 		driver->textconv_cache = c;
+		strbuf_release(&name);
 	}
 
 	return driver;
